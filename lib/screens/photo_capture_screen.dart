@@ -681,10 +681,18 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
     });
 
     try {
-      final permission = await Permission.location.request();
+      // Usar a API de permissão do próprio geolocator: no iOS, o
+      // permission_handler exige a macro PERMISSION_LOCATION=1 no Podfile e,
+      // sem ela, retorna "negado" sem exibir o diálogo. O geolocator fala
+      // direto com o CLLocationManager e funciona nas duas plataformas.
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
       print('📍 Permissão de localização: $permission');
-      
-      if (permission.isGranted) {
+
+      if (permission != LocationPermission.denied &&
+          permission != LocationPermission.deniedForever) {
         final position = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.high,
         );

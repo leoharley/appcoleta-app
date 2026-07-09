@@ -807,17 +807,25 @@ class _QuestionScreenState extends State<QuestionScreen> {
     }
 
     try {
-      final permission = await Permission.location.request();
-      print('📍 Permissão de localização: $permission');
-
-      if (!permission.isGranted) {
-        print('📍 Permissão de localização não concedida — seguindo sem coordenadas');
-        return;
-      }
-
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         print('📍 Serviço de localização desativado — seguindo sem coordenadas');
+        return;
+      }
+
+      // Usar a API de permissão do próprio geolocator: no iOS, o
+      // permission_handler exige a macro PERMISSION_LOCATION=1 no Podfile e,
+      // sem ela, retorna "negado" sem exibir o diálogo. O geolocator fala
+      // direto com o CLLocationManager e funciona nas duas plataformas.
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      print('📍 Permissão de localização: $permission');
+
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        print('📍 Permissão de localização não concedida — seguindo sem coordenadas');
         return;
       }
 
