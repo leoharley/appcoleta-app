@@ -92,6 +92,15 @@ class ApiService {
     try {
       final formJson = form.toJson();
 
+      // IDs locais são timestamps (millisecondsSinceEpoch, ~10^12) gerados
+      // pelo app para controle offline — o servidor não os conhece e um
+      // INTEGER no banco nem comporta o valor, derrubando a sincronização.
+      // Só enviar o id quando for um id real do servidor (modo de edição).
+      final dynamic formId = formJson['id'];
+      if (formId is int && formId >= 100000000000) {
+        formJson.remove('id');
+      }
+
       // Debug: verificar se photo_path_2 está sendo enviado
       print('📤 === ENVIANDO FORMULÁRIO PARA API ===');
       print('📸 photo_path: ${formJson['photo_path']}');

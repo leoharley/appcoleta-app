@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../providers/auth_provider.dart';
 import '../providers/questionnaire_provider.dart';
 import '../providers/form_provider.dart'; // Adicionar import do FormProvider
@@ -40,11 +43,75 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'error': 0,
   };
   bool _loadingPhotosStats = true;
+  String _appVersion = '';
+  StreamSubscription<ConnectivityResult>? _connectivitySub;
+  bool _hasNetwork = true;
 
   @override
   void initState() {
     super.initState();
     _loadData();
+    _loadAppVersion();
+    _watchConnectivity();
+  }
+
+  @override
+  void dispose() {
+    _connectivitySub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() {
+          _appVersion = info.version;
+        });
+      }
+    } catch (e) {
+      print('❌ Erro ao obter versão do app: $e');
+    }
+  }
+
+  /// Observa a conectividade: quando a rede volta, recarrega os questionários
+  /// do painel automaticamente, para que ajustes feitos lá (ex.: "requer foto",
+  /// alteração de pergunta) cheguem ao app sem depender do Sincronizar manual.
+  /// A sincronização de RESPOSTAS continua sendo apenas pelo botão.
+  Future<void> _watchConnectivity() async {
+    try {
+      final initial = await Connectivity().checkConnectivity();
+      _hasNetwork = initial != ConnectivityResult.none;
+    } catch (e) {
+      print('❌ Erro ao checar conectividade inicial: $e');
+    }
+
+    _connectivitySub = Connectivity().onConnectivityChanged.listen((result) {
+      final hasNetwork = result != ConnectivityResult.none;
+      if (hasNetwork && !_hasNetwork) {
+        print('🌐 Rede detectada — atualizando questionários do painel');
+        _refreshQuestionnairesOnReconnect();
+      }
+      _hasNetwork = hasNetwork;
+    });
+  }
+
+  Future<void> _refreshQuestionnairesOnReconnect() async {
+    final questionnaireProvider = Provider.of<QuestionnaireProvider>(
+      context,
+      listen: false,
+    );
+    await questionnaireProvider.loadQuestionnaires();
+
+    if (mounted && questionnaireProvider.error == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Questionários atualizados com o painel'),
+          backgroundColor: Color(0xFFE8962E),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   Future<void> _loadData() async {
@@ -303,8 +370,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                         ),
 
-                        // Espaçamento extra no final
-                        const SliverToBoxAdapter(child: SizedBox(height: 20)),
+                        // Versão do aplicativo
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 20),
+                            child: Center(
+                              child: Text(
+                                _appVersion.isEmpty
+                                    ? ''
+                                    : 'Versão $_appVersion',
+                                style: const TextStyle(
+                                  color: Colors.grey,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ),

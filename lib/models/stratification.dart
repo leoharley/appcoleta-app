@@ -23,8 +23,8 @@ double _parseDouble(dynamic value) {
   return 0.0;
 }
 
-bool _parseBool(dynamic value) {
-  if (value == null) return false;
+bool _parseBool(dynamic value, {bool ifNull = false}) {
+  if (value == null) return ifNull;
   if (value is bool) return value;
   if (value is String) {
     return value.toLowerCase() == 't' ||
@@ -32,7 +32,7 @@ bool _parseBool(dynamic value) {
         value == '1';
   }
   if (value is int) return value == 1;
-  return false;
+  return ifNull;
 }
 
 class Stratum {
@@ -97,7 +97,7 @@ class StratificationCategory {
       totalCurrent: _parseInt(json['total_current']),
       percentage: _parseDouble(json['percentage']),
       strata: (json['strata'] as List? ?? [])
-          .map((s) => Stratum.fromJson(s as Map<String, dynamic>))
+          .map((s) => Stratum.fromJson(Map<String, dynamic>.from(s as Map)))
           .toList(),
     );
   }
@@ -145,12 +145,16 @@ class StratificationData {
       questionnaireId: _parseInt(json['questionnaire_id']),
       stratificationId: _parseInt(json['stratification_id']),
       title: json['title']?.toString() ?? '',
-      isActive: _parseBool(json['is_active']),
+      // Se o servidor retornou os dados da estratificação, ela é considerada
+      // ativa a menos que ele diga explicitamente o contrário. Um is_active
+      // ausente/nulo NÃO pode esconder o painel (hasStratification depende
+      // deste campo). Aceita também a variação de nome "active".
+      isActive: _parseBool(json['is_active'] ?? json['active'], ifNull: true),
       overallProgress: OverallProgress.fromJson(
-          json['overall_progress'] as Map<String, dynamic>? ?? {}),
+          Map<String, dynamic>.from(json['overall_progress'] as Map? ?? {})),
       categories: (json['categories'] as List? ?? [])
-          .map((c) =>
-              StratificationCategory.fromJson(c as Map<String, dynamic>))
+          .map((c) => StratificationCategory.fromJson(
+              Map<String, dynamic>.from(c as Map)))
           .toList(),
     );
   }

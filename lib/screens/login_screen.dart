@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../providers/auth_provider.dart';
 import 'dashboard_screen.dart';
 
@@ -15,6 +16,26 @@ class _LoginScreenState extends State<LoginScreen> {
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
+  String _appVersion = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() {
+          _appVersion = info.version;
+        });
+      }
+    } catch (e) {
+      print('❌ Erro ao obter versão do app: $e');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -140,9 +161,9 @@ class _LoginScreenState extends State<LoginScreen> {
                       const SizedBox(height: 20),
 
                       const SizedBox(height: 10),
-                      const Text(
-                        'Versão: 2.0',
-                        style: TextStyle(
+                      Text(
+                        _appVersion.isEmpty ? '' : 'Versão: $_appVersion',
+                        style: const TextStyle(
                           fontSize: 12,
                           color: Color.fromARGB(255, 145, 145, 145),
                         ),

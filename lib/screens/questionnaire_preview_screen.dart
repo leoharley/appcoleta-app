@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import '../models/questionnaire.dart';
 import '../models/stratification.dart';
 import '../providers/stratification_provider.dart';
+import '../providers/questionnaire_provider.dart';
 import 'consent_screen.dart';
 import 'question_screen.dart';
 import 'stratification_dashboard_screen.dart';
@@ -407,7 +411,7 @@ class _QuestionnairePreviewScreenState
           Expanded(
             flex: 2,
             child: ElevatedButton(
-              onPressed: () => _startQuestionnaire(context),
+              onPressed: () => _startQuestionnaire(),
               child: const Text(
                 'Iniciar Questionário',
                 style: TextStyle(fontWeight: FontWeight.w600),
@@ -419,13 +423,226 @@ class _QuestionnairePreviewScreenState
     );
   }
 
-  void _startQuestionnaire(BuildContext context) {
-    if (widget.questionnaire.requiresConsent) {
+  String _formatDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}/'
+      '${d.month.toString().padLeft(2, '0')}/${d.year}';
+
+  /// Antes de iniciar, tenta conectar para puxar do painel qualquer
+  /// atualização feita neste questionário. Sem conexão, avisa o aplicador de
+  /// que está usando a versão baixada no aparelho (com a data da última
+  /// atualização) e deixa ele decidir se continua.
+  ///
+  /// Retorna o questionário a aplicar (atualizado quando online), ou null se
+  /// o aplicador cancelar.
+  Future<Questionnaire?> _refreshQuestionnaireBeforeStart() async {
+    bool online = false;
+    try {
+      final conn = await Connectivity().checkConnectivity();
+      online = conn != ConnectivityResult.none;
+    } catch (e) {
+      print('❌ Erro ao checar conectividade: $e');
+    }
+
+    if (online) {
+      try {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Verificando atualizações do questionário...'),
+              backgroundColor: Color(0xFFE8962E),
+              duration: Duration(seconds: 5),
+            ),
+          );
+        }
+
+        final provider =
+            Provider.of<QuestionnaireProvider>(context, listen: false);
+        await provider.loadQuestionnaires();
+
+        if (!mounted) return widget.questionnaire;
+        ScaffoldMessenger.of(context).clearSnackBars();
+
+        final updated =
+            provider.getQuestionnaireById(widget.questionnaire.id);
+        if (updated != null) {
+          print('✅ Questionário atualizado do painel antes da aplicação');
+          return updated;
+        }
+        // Não veio na lista (ex.: desativado no painel) — usar a versão local.
+        return widget.questionnaire;
+      } catch (e) {
+        print('❌ Falha ao atualizar questionário do painel: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).clearSnackBars();
+        }
+        // Tem rede mas o servidor falhou: tratar como offline para o aviso.
+      }
+    }
+
+    // Offline (ou servidor inacessível): avisar e deixar o aplicador decidir.
+    if (!mounted) return null;
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.wifi_off, color: Color(0xFFE8962E)),
+            SizedBox(width: 8),
+            Expanded(child: Text('Sem conexão')),
+          ],
+        ),
+        content: Text(
+          'Não foi possível conectar para buscar atualizações deste '
+          'questionário.\n\n'
+          'Você vai aplicar a versão baixada no aparelho, atualizada em '
+          '${_formatDate(widget.questionnaire.updatedAt)} pelo painel '
+          'administrativo.\n\n'
+          'Qualquer alteração feita no painel depois dessa data só aparecerá '
+          'no aplicativo quando houver conexão com a internet.',
+          style: const TextStyle(fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFE8962E),
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Continuar assim mesmo'),
+          ),
+        ],
+      ),
+    );
+    return proceed == true ? widget.questionnaire : null;
+  }
+
+  /// Verifica (e solicita) todas as permissões necessárias para a aplicação
+  /// deste questionário. Se qualquer uma for negada, mostra um diálogo
+  /// explicando o impedimento e como resolver, e retorna false — a aplicação
+  /// NÃO pode iniciar sem as permissões, para não perder áudio/GPS/foto no
+  /// meio do trabalho de campo.
+  Future<bool> _ensurePermissionsBeforeStart(Questionnaire questionnaire) async {
+    final missing = <String>[];
+
+    // Microfone: a gravação de áudio é automática durante toda a aplicação.
+    final micStatus = await Permission.microphone.request();
+    if (!micStatus.isGranted) {
+      missing.add('Microfone — gravação de áudio da entrevista');
+    }
+
+    // Localização (apenas se o questionário exige).
+    if (questionnaire.requiresLocation) {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        missing.add('GPS desativado — ative a localização do aparelho');
+      } else {
+        var permission = await Geolocator.checkPermission();
+        if (permission == LocationPermission.denied) {
+          permission = await Geolocator.requestPermission();
+        }
+        if (permission == LocationPermission.denied ||
+            permission == LocationPermission.deniedForever) {
+          missing.add('Localização — registro do ponto de coleta');
+        }
+      }
+    }
+
+    // Câmera (apenas se o questionário exige foto de evidência).
+    if (questionnaire.requiresPhoto) {
+      final camStatus = await Permission.camera.request();
+      if (!camStatus.isGranted) {
+        missing.add('Câmera — foto de evidência');
+      }
+    }
+
+    if (missing.isEmpty) return true;
+
+    if (!mounted) return false;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.lock_outline, color: Color(0xFFE8962E)),
+            SizedBox(width: 8),
+            Expanded(child: Text('Permissões necessárias')),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Não é possível iniciar a aplicação do questionário. '
+              'Os itens abaixo precisam ser resolvidos:',
+            ),
+            const SizedBox(height: 12),
+            ...missing.map(
+              (m) => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.close, color: Colors.red, size: 16),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(m, style: const TextStyle(fontSize: 13)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Como resolver: toque em "Abrir Configurações", conceda as '
+              'permissões listadas e volte para iniciar o questionário. '
+              'Se o GPS estiver desativado, ative a localização nas '
+              'configurações rápidas do aparelho.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Fechar'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              openAppSettings();
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFE8962E),
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Abrir Configurações'),
+          ),
+        ],
+      ),
+    );
+    return false;
+  }
+
+  Future<void> _startQuestionnaire() async {
+    // 1. Tentar puxar do painel a versão mais recente (avisa se offline).
+    final questionnaire = await _refreshQuestionnaireBeforeStart();
+    if (questionnaire == null || !mounted) return;
+
+    // 2. Permissões — sobre a versão atualizada (ex.: painel pode ter
+    //    acabado de ligar "requer foto", que exige câmera).
+    final permissionsOk = await _ensurePermissionsBeforeStart(questionnaire);
+    if (!permissionsOk || !mounted) return;
+
+    if (questionnaire.requiresConsent) {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) =>
-              ConsentScreen(questionnaire: widget.questionnaire),
+          builder: (context) => ConsentScreen(questionnaire: questionnaire),
         ),
       );
     } else {
@@ -433,7 +650,7 @@ class _QuestionnairePreviewScreenState
         context,
         MaterialPageRoute(
           builder: (context) => QuestionScreen(
-            questionnaire: widget.questionnaire,
+            questionnaire: questionnaire,
             currentQuestionIndex: 0,
           ),
         ),

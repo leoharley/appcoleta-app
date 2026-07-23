@@ -233,6 +233,26 @@ class _QuestionScreenState extends State<QuestionScreen> {
                     ),
                     itemCount: visibleQuestions.length,
                     onPageChanged: (index) {
+                      // Fechar o teclado herdado da questão anterior quando a
+                      // nova questão não usa digitação (múltipla escolha,
+                      // checkbox, data). Tipos desconhecidos caem no campo de
+                      // texto, então só fechamos nos tipos conhecidos sem
+                      // teclado.
+                      const typesWithoutKeyboard = {
+                        'radio',
+                        'checkbox',
+                        'date',
+                        'datetime',
+                      };
+                      if (index >= 0 && index < visibleQuestions.length) {
+                        final newType = visibleQuestions[index]
+                            .questionType
+                            .toLowerCase()
+                            .trim();
+                        if (typesWithoutKeyboard.contains(newType)) {
+                          FocusManager.instance.primaryFocus?.unfocus();
+                        }
+                      }
                       setState(() {
                         _currentVisibleIndex = index;
                       });
