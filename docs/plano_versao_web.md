@@ -9,12 +9,59 @@ permissões, sincronização — e áudio gravado **enquanto a tela estiver ativ
 
 **Alvos:** Android/Chrome e iPhone/Safari 16.4+.
 
-**Hospedagem (definida):** `https://institutoalveslima.com.br/app` — mesmo
-domínio da API (`/painel/api`), portanto SEM necessidade de CORS em produção
-(liberar apenas localhost para desenvolvimento). HTTPS é obrigatório (GPS,
-câmera, microfone e offline só funcionam em página segura).
-Build de produção: `flutter build web --base-href /app/` → copiar `build/web`
-para a pasta `/app` do servidor.
+**Hospedagem (definida):** `https://institutoalveslima.com.br/painel/app/` —
+mesmo domínio E mesmo diretório-pai da API (`/painel/api`), portanto SEM
+necessidade de CORS em produção (liberar apenas localhost para
+desenvolvimento). HTTPS é obrigatório (GPS, câmera, microfone e offline só
+funcionam em página segura).
+
+### Procedimento de publicação
+
+```
+flutter build web --base-href /painel/app/
+```
+
+Copiar o **conteúdo** de `build/web` (não a pasta) para `/painel/app` no
+servidor, apagando o conteúdo anterior antes — arquivo de build antiga
+convivendo com o `version.json` novo dá tela branca.
+
+Pontos que não são óbvios e já custaram tempo:
+
+- **`web/.htaccess` precisa subir junto.** Começa com ponto, então o
+  gerenciador de arquivos da hospedagem esconde por padrão (procurar "mostrar
+  arquivos ocultos"). Sem ele não há regra de cache, e a atualização não chega
+  ao aplicador.
+- **`canvaskit/` são ~19 dos 26 MB** e é obrigatório. Se a transferência cair,
+  é a pasta que mais provavelmente ficou incompleta.
+- **Transferência binária** no cliente FTP — modo ASCII corrompe `.png`, `.otf`
+  e o `.wasm` do canvaskit.
+- **Zip pelo PowerShell 5.1:** `Compress-Archive` grava caminhos com barra
+  invertida, fora do padrão ZIP; extratores em Linux criam arquivos com o nome
+  literal em vez de pastas. Usar `ZipFile.CreateEntryFromFile` com barra
+  normal, ou subir os arquivos soltos.
+
+### Como a atualização chega ao aplicador
+
+Resolvido em duas camadas — uma sozinha não funciona:
+
+1. **[web/.htaccess](../web/.htaccess)** — `no-store` nos pontos de entrada
+   (`index.html`, `flutter_bootstrap.js`, `flutter_service_worker.js`,
+   `version.json`, `manifest.json`), que é por onde o app descobre que há
+   versão nova; `no-cache` no resto (revalida, 304 quando não mudou).
+2. **[web/index.html](../web/index.html)** — o `flutter.js` não recarrega
+   sozinho: o worker novo instala, fica em espera e só assume quando todas as
+   abas fecham, o que num app na tela de início pode nunca acontecer. O script
+   detecta a versão nova (ao abrir e ao voltar ao primeiro plano) e mostra a
+   barra "Nova versão disponível" com botão Atualizar, que manda `skipWaiting`
+   ao service worker e recarrega.
+
+A troca **não** é automática de propósito: recarregar no meio de um
+questionário perderia as respostas ainda não finalizadas, que só vão para o
+armazenamento local ao concluir.
+
+Consequência esperada de cada atualização de versão: o app **força logout** por
+segurança (`auth_provider`), então o aplicador loga de novo. Avisar a equipe
+antes de publicar e pedir que sincronizem.
 
 **Pré-requisito de produto:** cliente ciente de que o áudio web cobre o período
 de tela ativa (interrupções — ligação, troca de app — geram lacunas; o que já
