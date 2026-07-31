@@ -39,5 +39,106 @@
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>
+
+  <script>
+    // -----------------------------------------------------------------------
+    // Atualização do app publicado, sem depender de limpeza de cache.
+    //
+    // O service worker do Flutter continua servindo a versão instalada mesmo
+    // depois de um deploy novo: o worker novo instala e fica "esperando", e só
+    // assume quando TODAS as abas do app são fechadas. Num app instalado na
+    // tela de início isso pode não acontecer por dias.
+    //
+    // Aqui a gente detecta a versão nova e a aplica com um toque. A troca não é
+    // automática de propósito: recarregar no meio de um questionário perderia
+    // as respostas ainda não finalizadas, que só vão para o armazenamento local
+    // ao concluir. Por isso quem decide o momento é o aplicador.
+    // -----------------------------------------------------------------------
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+
+      var recarregando = false;
+
+      // Disparado quando o worker novo assume o controle da página.
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (recarregando) return;
+        recarregando = true;
+        window.location.reload();
+      });
+
+      function mostrarAviso(worker) {
+        if (document.getElementById('aviso-atualizacao')) return;
+
+        var barra = document.createElement('div');
+        barra.id = 'aviso-atualizacao';
+        barra.style.cssText =
+          'position:fixed;left:0;right:0;bottom:0;z-index:2147483647;' +
+          'background:#23345F;color:#fff;padding:12px 16px;' +
+          'display:flex;align-items:center;gap:12px;' +
+          'font-family:system-ui,-apple-system,Roboto,sans-serif;font-size:14px;' +
+          'box-shadow:0 -2px 12px rgba(0,0,0,.3);' +
+          'padding-bottom:calc(12px + env(safe-area-inset-bottom));';
+
+        var texto = document.createElement('span');
+        texto.style.cssText = 'flex:1;line-height:1.3;';
+        texto.textContent = 'Nova versão do app disponível.';
+
+        var botao = document.createElement('button');
+        botao.textContent = 'Atualizar';
+        botao.style.cssText =
+          'background:#E8962E;color:#fff;border:0;border-radius:6px;' +
+          'padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;' +
+          'font-family:inherit;white-space:nowrap;';
+        botao.addEventListener('click', function () {
+          botao.disabled = true;
+          botao.textContent = 'Atualizando...';
+          // O service worker do Flutter trata esta mensagem chamando
+          // self.skipWaiting(), o que dispara o controllerchange acima.
+          worker.postMessage('skipWaiting');
+        });
+
+        var depois = document.createElement('button');
+        depois.textContent = 'Depois';
+        depois.setAttribute('aria-label', 'Adiar atualização');
+        depois.style.cssText =
+          'background:transparent;color:#fff;border:0;padding:10px 4px;' +
+          'font-size:14px;cursor:pointer;font-family:inherit;opacity:.8;';
+        depois.addEventListener('click', function () {
+          barra.remove();
+        });
+
+        barra.appendChild(texto);
+        barra.appendChild(depois);
+        barra.appendChild(botao);
+        document.body.appendChild(barra);
+      }
+
+      navigator.serviceWorker.ready.then(function (reg) {
+        // Worker novo já instalado e aguardando de uma visita anterior.
+        if (reg.waiting) mostrarAviso(reg.waiting);
+
+        reg.addEventListener('updatefound', function () {
+          var novo = reg.installing;
+          if (!novo) return;
+          novo.addEventListener('statechange', function () {
+            // 'installed' com um controller já ativo significa que havia uma
+            // versão rodando: é atualização, não a primeira instalação.
+            if (novo.state === 'installed' && navigator.serviceWorker.controller) {
+              mostrarAviso(novo);
+            }
+          });
+        });
+
+        // Procurar atualização ao abrir e sempre que o app voltar ao primeiro
+        // plano — é quando o aplicador costuma reencontrar sinal em campo.
+        reg.update();
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState === 'visible') {
+            reg.update();
+          }
+        });
+      });
+    })();
+  </script>
 </body>
 </html>

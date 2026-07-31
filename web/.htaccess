@@ -1,0 +1,63 @@
+# Configuração do App Coleta (PWA) servido em /painel/app/.
+#
+# Este arquivo mora em web/ de propósito: o `flutter build web` copia tudo que
+# está aqui para build/web, então a configuração acompanha toda publicação.
+# Mantê-lo só em build/web faria um `flutter clean` apagar sem aviso.
+
+# ---------------------------------------------------------------------------
+# Rotas internas do app (SPA): qualquer caminho que não exista como arquivo
+# real volta para o index.html, senão recarregar numa rota dá 404.
+# ---------------------------------------------------------------------------
+RewriteEngine On
+RewriteBase /painel/app/
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . index.html [L]
+
+<IfModule mod_headers.c>
+  # -------------------------------------------------------------------------
+  # Regra geral: revalidar sempre com o servidor.
+  #
+  # "no-cache" NÃO significa "não guarde" — o navegador guarda e pergunta ao
+  # servidor se mudou, recebendo 304 quando não mudou. Custo baixo, e quem
+  # garante a velocidade e o funcionamento offline é o service worker, não o
+  # cache HTTP. Deixar cache longo aqui só cria versão presa no aparelho.
+  # -------------------------------------------------------------------------
+  <FilesMatch "\.(js|json|html|png|jpg|jpeg|svg|ttf|otf|woff2?|wasm|bin|symbols)$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
+
+  # -------------------------------------------------------------------------
+  # Pontos de entrada: nunca podem vir do cache, em hipótese alguma.
+  # É por estes arquivos que o app descobre que existe versão nova. Se vierem
+  # cacheados, a atualização publicada aqui não chega ao aplicador — que é
+  # exatamente o problema que este bloco existe para evitar.
+  #
+  # Vem depois do bloco acima porque, em regras concorrentes, a última vence.
+  # -------------------------------------------------------------------------
+  <FilesMatch "^(index\.html|flutter_bootstrap\.js|flutter_service_worker\.js|flutter\.js|version\.json|manifest\.json)$">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+  </FilesMatch>
+</IfModule>
+
+# ---------------------------------------------------------------------------
+# MIME types. O canvaskit (motor gráfico do Flutter, ~19 MB da build) é .wasm;
+# servido com o tipo errado, o navegador recusa e o app não abre.
+# ---------------------------------------------------------------------------
+<IfModule mod_mime.c>
+  AddType application/wasm .wasm
+  AddType application/manifest+json .webmanifest
+  AddType font/woff2 .woff2
+</IfModule>
+
+# ---------------------------------------------------------------------------
+# Compressão: main.dart.js tem ~4,3 MB e comprime muito bem. Sem isso, cada
+# primeiro acesso em campo baixa o arquivo inteiro.
+# ---------------------------------------------------------------------------
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css text/plain
+  AddOutputFilterByType DEFLATE application/javascript application/json
+  AddOutputFilterByType DEFLATE application/wasm image/svg+xml
+</IfModule>
