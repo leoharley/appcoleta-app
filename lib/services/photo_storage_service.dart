@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
+import '../services/platform_caps.dart';
 
 class PhotoStorageService {
   static const String _photosMetadataKey = 'offline_photos_metadata';
@@ -446,6 +447,10 @@ class PhotoStorageService {
 
   /// Sincroniza todas as fotos pendentes com o servidor
   static Future<int> syncPendingPhotos() async {
+    // Web: fotos offline em arquivo não existem — o MediaStore (IndexedDB)
+    // assume na Fase 2 do plano web (docs/plano_versao_web.md).
+    if (!PlatformCaps.hasFileSystem) return 0;
+
     try {
       print('📸 === SINCRONIZANDO FOTOS PENDENTES ===');
       

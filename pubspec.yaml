@@ -103,6 +103,14 @@ dependencies:
   # Para download de arquivos na web
   web: ^1.1.0
 
+  # --- Versão Web (PWA) ---
+  # dart:io compatível com web (no nativo re-exporta o dart:io real)
+  universal_io: ^2.2.2
+  # IndexedDB para fotos/áudios offline no navegador
+  idb_shim: ^2.6.1
+  # Manter a tela acesa durante a aplicação do questionário
+  wakelock_plus: ^1.1.4
+
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true

@@ -4,8 +4,11 @@ import 'package:image_picker/image_picker.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
+import 'dart:typed_data';
 import '../models/questionnaire.dart';
 import '../providers/form_provider.dart';
+import '../services/platform_caps.dart';
+import '../services/web_media_store/web_media_store.dart';
 import 'form_completed_screen.dart';
 
 class PhotoCaptureScreen extends StatefulWidget {
@@ -20,7 +23,16 @@ class PhotoCaptureScreen extends StatefulWidget {
 class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
   File? _capturedPhoto;
   File? _capturedPhoto2; // Segunda foto
+  // Web: as fotos vivem em memória/IndexedDB (não há File no navegador)
+  Uint8List? _capturedPhotoBytes;
+  Uint8List? _capturedPhoto2Bytes;
+  String? _photoFilename;
+  String? _photo2Filename;
   Position? _currentPosition;
+
+  bool get _hasPhoto1 => _capturedPhoto != null || _capturedPhotoBytes != null;
+  bool get _hasPhoto2 =>
+      _capturedPhoto2 != null || _capturedPhoto2Bytes != null;
   bool _isLoadingLocation = false;
   bool _isNavigating = false;
   final ImagePicker _picker = ImagePicker();
@@ -111,7 +123,7 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
                             
                             _buildPhotoCapture(),
 
-                            if (_capturedPhoto != null) ...[
+                            if (_hasPhoto1) ...[
                               const SizedBox(height: 20),
                               _buildCapturedPhoto(),
                             ],
@@ -130,7 +142,7 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
                             const SizedBox(height: 10),
                             _buildPhotoCapture2(),
 
-                            if (_capturedPhoto2 != null) ...[
+                            if (_hasPhoto2) ...[
                               const SizedBox(height: 20),
                               _buildCapturedPhoto2(),
                             ],
@@ -285,14 +297,16 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(8),
               image: DecorationImage(
-                image: FileImage(_capturedPhoto!),
+                image: _capturedPhotoBytes != null
+                    ? MemoryImage(_capturedPhotoBytes!) as ImageProvider
+                    : FileImage(_capturedPhoto!),
                 fit: BoxFit.cover,
               ),
             ),
           ),
           const SizedBox(height: 8),
           Text(
-            'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg • ${(_capturedPhoto!.lengthSync() / (1024 * 1024)).toStringAsFixed(1)} MB',
+            'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg • ${((_capturedPhotoBytes?.length ?? _capturedPhoto!.lengthSync()) / (1024 * 1024)).toStringAsFixed(1)} MB',
             style: const TextStyle(
               color: Colors.grey,
               fontSize: 12,
@@ -350,14 +364,16 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(8),
               image: DecorationImage(
-                image: FileImage(_capturedPhoto2!),
+                image: _capturedPhoto2Bytes != null
+                    ? MemoryImage(_capturedPhoto2Bytes!) as ImageProvider
+                    : FileImage(_capturedPhoto2!),
                 fit: BoxFit.cover,
               ),
             ),
           ),
           const SizedBox(height: 8),
           Text(
-            'IMG2_${DateTime.now().millisecondsSinceEpoch}.jpg • ${(_capturedPhoto2!.lengthSync() / (1024 * 1024)).toStringAsFixed(1)} MB',
+            'IMG2_${DateTime.now().millisecondsSinceEpoch}.jpg • ${((_capturedPhoto2Bytes?.length ?? _capturedPhoto2!.lengthSync()) / (1024 * 1024)).toStringAsFixed(1)} MB',
             style: const TextStyle(
               color: Colors.grey,
               fontSize: 12,
@@ -483,13 +499,13 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
   }
 
   Widget _buildActionButtons() {
-    final canFinish = !widget.questionnaire.requiresPhoto || _capturedPhoto != null;
-    
+    final canFinish = !widget.questionnaire.requiresPhoto || _hasPhoto1;
+
     return Padding(
       padding: const EdgeInsets.only(top: 20),
       child: Row(
         children: [
-          if (_capturedPhoto != null)
+          if (_hasPhoto1)
             Expanded(
               child: OutlinedButton(
                 onPressed: _isNavigating ? null : _retakePhoto,
@@ -503,11 +519,11 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
                 ),
               ),
             ),
-          
-          if (_capturedPhoto != null) const SizedBox(width: 10),
-          
+
+          if (_hasPhoto1) const SizedBox(width: 10),
+
           Expanded(
-            flex: _capturedPhoto != null ? 2 : 1,
+            flex: _hasPhoto1 ? 2 : 1,
             child: ElevatedButton(
               //onPressed: _isNavigating ? null : (canFinish ? _completeForm : null),
               onPressed: _completeForm,
@@ -543,33 +559,60 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
 
   Future<void> _capturePhoto() async {
     print('📸 Tentando capturar foto');
-    
+
     try {
-      final permission = await Permission.camera.request();
+      // Na web o prompt de câmera é do próprio navegador, no pickImage.
+      final permission = PlatformCaps.hasPermissionHandler
+          ? await Permission.camera.request()
+          : PermissionStatus.granted;
       print('📸 Permissão de câmera: $permission');
-      
+
       if (permission.isGranted) {
         final XFile? photo = await _picker.pickImage(
           source: ImageSource.camera,
           imageQuality: 80,
         );
-        
+
         if (photo != null) {
           print('📸 Foto capturada: ${photo.path}');
+
+          if (PlatformCaps.isWeb) {
+            // Web: guardar bytes no IndexedDB e passar só o filename ao
+            // formulário (o submit trata nomes sem '/' como já processados).
+            final bytes = await photo.readAsBytes();
+            final filename =
+                'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
+            // Foto anterior refeita? Remover a pendência órfã.
+            if (_photoFilename != null) {
+              await WebMediaStore.delete(_photoFilename!);
+            }
+            await WebMediaStore.save(
+                filename: filename, bytes: bytes, kind: 'photo');
+            setState(() {
+              _capturedPhotoBytes = bytes;
+              _photoFilename = filename;
+            });
+            if (mounted) {
+              Provider.of<FormProvider>(context, listen: false)
+                  .setPhoto(filename);
+            }
+            return;
+          }
+
           setState(() {
             _capturedPhoto = File(photo.path);
           });
-          
+
           try {
             final formProvider = Provider.of<FormProvider>(context, listen: false);
-            
+
             // NOVA LÓGICA: Não salvar imediatamente offline aqui
             // Apenas definir o caminho da foto no formulário
             formProvider.setPhoto(photo.path);
             print('✅ Caminho da foto definido no FormProvider');
-            
+
             // A foto será salva offline automaticamente durante a submissão do formulário
-            
+
           } catch (e) {
             print('❌ Erro ao definir foto no FormProvider: $e');
           }
@@ -604,8 +647,14 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
 
   void _retakePhoto() {
     print('🔄 Refazendo foto');
+    // Web: remover a pendência do IndexedDB para não subir foto órfã.
+    if (_photoFilename != null) {
+      WebMediaStore.delete(_photoFilename!);
+    }
     setState(() {
       _capturedPhoto = null;
+      _capturedPhotoBytes = null;
+      _photoFilename = null;
     });
   }
 
@@ -613,7 +662,10 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
     print('📸 Tentando capturar segunda foto');
 
     try {
-      final permission = await Permission.camera.request();
+      // Na web o prompt de câmera é do próprio navegador, no pickImage.
+      final permission = PlatformCaps.hasPermissionHandler
+          ? await Permission.camera.request()
+          : PermissionStatus.granted;
       print('📸 Permissão de câmera: $permission');
 
       if (permission.isGranted) {
@@ -624,6 +676,27 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
 
         if (photo != null) {
           print('📸 Segunda foto capturada: ${photo.path}');
+
+          if (PlatformCaps.isWeb) {
+            final bytes = await photo.readAsBytes();
+            final filename =
+                'photo2_${DateTime.now().millisecondsSinceEpoch}.jpg';
+            if (_photo2Filename != null) {
+              await WebMediaStore.delete(_photo2Filename!);
+            }
+            await WebMediaStore.save(
+                filename: filename, bytes: bytes, kind: 'photo');
+            setState(() {
+              _capturedPhoto2Bytes = bytes;
+              _photo2Filename = filename;
+            });
+            if (mounted) {
+              Provider.of<FormProvider>(context, listen: false)
+                  .setPhoto2(filename);
+            }
+            return;
+          }
+
           setState(() {
             _capturedPhoto2 = File(photo.path);
           });
@@ -668,9 +741,125 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
 
   void _retakePhoto2() {
     print('🔄 Refazendo segunda foto');
+    // Web: remover a pendência do IndexedDB para não subir foto órfã.
+    if (_photo2Filename != null) {
+      WebMediaStore.delete(_photo2Filename!);
+    }
     setState(() {
       _capturedPhoto2 = null;
+      _capturedPhoto2Bytes = null;
+      _photo2Filename = null;
     });
+  }
+
+  /// Garante que há coordenadas gravadas no formulário antes de finalizar.
+  /// Tenta capturar em laço: a cada falha explica o motivo e oferece nova
+  /// tentativa. Retorna false apenas se o aplicador desistir — e nesse caso a
+  /// finalização não acontece.
+  Future<bool> _ensureLocationOrBlock() async {
+    final formProvider = Provider.of<FormProvider>(context, listen: false);
+
+    while (true) {
+      if (formProvider.currentForm?.latitude != null) {
+        print('📍 Localização já registrada no formulário');
+        return true;
+      }
+
+      final motivo = await _tryCaptureLocation(formProvider);
+      if (motivo == null) return true;
+
+      if (!mounted) return false;
+      final tentarNovamente = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.location_off, color: Color(0xFFE8962E)),
+              SizedBox(width: 8),
+              Expanded(child: Text('Localização obrigatória')),
+            ],
+          ),
+          content: Text(
+            '$motivo\n\n'
+            'Este questionário só pode ser finalizado com a localização '
+            'registrada.',
+            style: const TextStyle(fontSize: 14),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE8962E),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Tentar novamente'),
+            ),
+          ],
+        ),
+      );
+
+      if (tentarNovamente != true) return false;
+    }
+  }
+
+  /// Uma tentativa de captura. Retorna null em caso de sucesso, ou o motivo
+  /// da falha já escrito para o aplicador.
+  Future<String?> _tryCaptureLocation(FormProvider formProvider) async {
+    if (mounted) {
+      setState(() {
+        _isLoadingLocation = true;
+      });
+    }
+
+    try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        return 'O GPS do aparelho está desligado. Ative a localização nas '
+            'configurações e tente novamente.';
+      }
+
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        return 'A permissão de localização foi negada permanentemente. '
+            'Libere o acesso à localização nas configurações do aparelho.';
+      }
+      if (permission == LocationPermission.denied) {
+        return 'A permissão de localização não foi concedida. É obrigatória '
+            'para finalizar este questionário.';
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      ).timeout(const Duration(seconds: 15));
+
+      print('📍 Localização obtida: ${position.latitude}, ${position.longitude}');
+      formProvider.setLocation(position.latitude, position.longitude, '');
+      if (mounted) {
+        setState(() {
+          _currentPosition = position;
+        });
+      }
+      return null;
+    } catch (e) {
+      print('❌ Erro ao capturar localização: $e');
+      return 'Não foi possível obter o sinal de GPS. Vá para um local mais '
+          'aberto, longe de paredes e coberturas, e tente novamente.';
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingLocation = false;
+        });
+      }
+    }
   }
 
   Future<void> _getCurrentLocation() async {
@@ -748,6 +937,16 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
       );
       return;
     } */
+
+    // Localização obrigatória: não deixa finalizar sem coordenadas gravadas.
+    // Tenta capturar em laço, explicando a falha e oferecendo nova tentativa.
+    if (widget.questionnaire.requiresLocation) {
+      final temLocalizacao = await _ensureLocationOrBlock();
+      if (!temLocalizacao) {
+        print('📍 Finalização bloqueada: sem localização capturada');
+        return;
+      }
+    }
 
     setState(() {
       _isNavigating = true;

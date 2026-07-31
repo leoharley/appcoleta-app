@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:appcoleta/models/stratification.dart';
 
@@ -245,6 +247,112 @@ void main() {
     test('não retorna alerta para questão sem estratificação', () {
       expect(buildData(quotaReached: true).getQuotaAlert(99, '35-44 anos'),
           isNull);
+    });
+  });
+
+  // O cache offline grava com toJson e relê com fromJson. Se as chaves
+  // divergirem, a estratificação volta zerada em campo — sem erro visível,
+  // que é o pior tipo de falha aqui.
+  group('toJson (cache offline)', () {
+    final original = StratificationData.fromJson({
+      'questionnaire_id': 10,
+      'stratification_id': 3,
+      'title': 'Pesquisa Municipal',
+      'is_active': true,
+      'overall_progress': {
+        'total_target': 200,
+        'total_current': 85,
+        'percentage': 42.5,
+      },
+      'categories': [
+        {
+          'category_id': 1,
+          'category_name': 'Faixa Etária',
+          'question_id': 55,
+          'total_target': 100,
+          'total_current': 45,
+          'percentage': 45.0,
+          'strata': [
+            {
+              'stratum_id': 7,
+              'option_value': '18-24',
+              'option_label': '18-24 anos',
+              'target_quota': 30,
+              'current_count': 30,
+              'percentage': 100.0,
+              'quota_reached': true,
+            },
+            {
+              'stratum_id': 8,
+              'option_value': '25-34',
+              'option_label': '25-34 anos',
+              'target_quota': 40,
+              'current_count': 15,
+              'percentage': 37.5,
+              'quota_reached': false,
+            },
+          ],
+        },
+      ],
+    });
+
+    test('round-trip preserva todos os campos', () {
+      final restaurado = StratificationData.fromJson(original.toJson());
+
+      expect(restaurado.questionnaireId, original.questionnaireId);
+      expect(restaurado.stratificationId, original.stratificationId);
+      expect(restaurado.title, original.title);
+      expect(restaurado.isActive, original.isActive);
+      expect(restaurado.overallProgress.totalTarget,
+          original.overallProgress.totalTarget);
+      expect(restaurado.overallProgress.totalCurrent,
+          original.overallProgress.totalCurrent);
+      expect(restaurado.overallProgress.percentage,
+          original.overallProgress.percentage);
+      expect(restaurado.categories.length, original.categories.length);
+
+      final cat = restaurado.categories.first;
+      final catOriginal = original.categories.first;
+      expect(cat.categoryId, catOriginal.categoryId);
+      expect(cat.categoryName, catOriginal.categoryName);
+      expect(cat.questionId, catOriginal.questionId);
+      expect(cat.totalTarget, catOriginal.totalTarget);
+      expect(cat.totalCurrent, catOriginal.totalCurrent);
+      expect(cat.percentage, catOriginal.percentage);
+      expect(cat.strata.length, catOriginal.strata.length);
+
+      final stratum = cat.strata.first;
+      final stratumOriginal = catOriginal.strata.first;
+      expect(stratum.stratumId, stratumOriginal.stratumId);
+      expect(stratum.optionValue, stratumOriginal.optionValue);
+      expect(stratum.optionLabel, stratumOriginal.optionLabel);
+      expect(stratum.targetQuota, stratumOriginal.targetQuota);
+      expect(stratum.currentCount, stratumOriginal.currentCount);
+      expect(stratum.percentage, stratumOriginal.percentage);
+      expect(stratum.quotaReached, stratumOriginal.quotaReached);
+    });
+
+    test('sobrevive à serialização JSON real do SharedPreferences', () {
+      // jsonEncode/jsonDecode é o que acontece de fato no cache — um tipo não
+      // serializável passaria no teste acima e explodiria só em campo.
+      final restaurado = StratificationData.fromJson(
+        Map<String, dynamic>.from(
+            jsonDecode(jsonEncode(original.toJson())) as Map),
+      );
+
+      expect(restaurado.title, 'Pesquisa Municipal');
+      expect(restaurado.isActive, isTrue);
+      expect(restaurado.categories.first.strata.length, 2);
+    });
+
+    test('alerta de cota continua funcionando após o round-trip', () {
+      final restaurado = StratificationData.fromJson(original.toJson());
+      final alerta = restaurado.getQuotaAlert(55, '18-24');
+
+      expect(alerta, isNotNull);
+      expect(alerta!['optionLabel'], '18-24 anos');
+      expect(alerta['currentCount'], 30);
+      expect(alerta['targetQuota'], 30);
     });
   });
 }

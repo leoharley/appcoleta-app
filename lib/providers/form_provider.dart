@@ -11,6 +11,8 @@ import '../services/conditional_logic_engine.dart';
 import '../services/local_storage_service.dart';
 import '../services/api_service.dart';
 import '../services/photo_storage_service.dart';
+import '../services/platform_caps.dart';
+import '../services/web_media_store/web_media_store.dart';
 import 'package:path_provider/path_provider.dart';
 
 class FormProvider with ChangeNotifier {
@@ -636,6 +638,13 @@ class FormProvider with ChangeNotifier {
   Future<String?> saveAudioOffline(String audioPath) async {
     print('🎤 === SALVANDO ÁUDIO OFFLINE ===');
 
+    // Web: sem sistema de arquivos — o MediaStore (IndexedDB) assume na
+    // Fase 2 do plano web (docs/plano_versao_web.md).
+    if (!PlatformCaps.hasFileSystem) {
+      print('🎤 Web: armazenamento de áudio em arquivo indisponível');
+      return null;
+    }
+
     if (_currentForm == null) {
       print('❌ Nenhum formulário ativo para salvar áudio');
       return null;
@@ -685,6 +694,13 @@ class FormProvider with ChangeNotifier {
   Future<String?> savePhotoOffline(String photoPath, {String photoType = 'photo1'}) async {
     print('📸 === SALVANDO FOTO OFFLINE ===');
     print('📸 Tipo: $photoType');
+
+    // Web: sem sistema de arquivos — o MediaStore (IndexedDB) assume na
+    // Fase 2 do plano web (docs/plano_versao_web.md).
+    if (!PlatformCaps.hasFileSystem) {
+      print('📸 Web: armazenamento de foto em arquivo indisponível');
+      return null;
+    }
 
     if (_currentForm == null) {
       print('❌ Nenhum formulário ativo para salvar foto');
@@ -1246,6 +1262,11 @@ class FormProvider with ChangeNotifier {
   Future<int> syncPendingPhotosOnly() async {
     print('📸 === SINCRONIZAÇÃO ESPECÍFICA DE FOTOS ===');
 
+    // Web: fotos pendentes vivem no IndexedDB
+    if (!PlatformCaps.hasFileSystem) {
+      return await syncWebPendingMedia('photo');
+    }
+
     try {
       // Debug antes da sincronização
       print('📸 Debug antes da sincronização:');
@@ -1267,12 +1288,63 @@ class FormProvider with ChangeNotifier {
     }
   }
 
+  /// Versão web: sincroniza mídias pendentes ([kind] = 'photo' ou 'audio')
+  /// guardadas no IndexedDB pelo WebMediaStore. Cada item enviado com
+  /// sucesso é removido — o que resta é pendente por definição (retry
+  /// natural), mesmo contrato do nativo.
+  Future<int> syncWebPendingMedia(String kind) async {
+    if (PlatformCaps.hasFileSystem) return 0;
+
+    try {
+      final filenames = await WebMediaStore.listPendingFilenames(kind);
+      print('🌐 $kind pendentes no IndexedDB: ${filenames.length}');
+
+      int synced = 0;
+      for (final filename in filenames) {
+        try {
+          final bytes = await WebMediaStore.readBytes(filename);
+          if (bytes == null || bytes.isEmpty) {
+            print('⚠️ $filename sem bytes — removendo registro órfão');
+            await WebMediaStore.delete(filename);
+            continue;
+          }
+
+          final result = kind == 'photo'
+              ? await ApiService.uploadPhotoBytes(bytes, filename)
+              : await ApiService.uploadAudioBytes(bytes, filename);
+
+          if (result['success'] == true ||
+              result.containsKey('filename') ||
+              result.containsKey('file_name') ||
+              result.containsKey('path')) {
+            await WebMediaStore.delete(filename);
+            synced++;
+            print('✅ $kind $filename sincronizado e removido do IndexedDB');
+          } else {
+            print('❌ Resposta inválida do servidor para $filename: $result');
+          }
+        } catch (e) {
+          print('❌ Erro ao sincronizar $kind $filename: $e');
+        }
+      }
+      return synced;
+    } catch (e, stackTrace) {
+      print('❌ Erro na sincronização web de $kind: $e');
+      print('📋 Stack trace: $stackTrace');
+      return 0;
+    }
+  }
+
   /// Sincroniza áudios pendentes (arquivos em offline_audios/).
   /// Cada arquivo enviado com sucesso é removido localmente, então o que
   /// resta no diretório é, por definição, pendente — isso dá retry natural
   /// sem precisar de metadados como os das fotos.
   Future<int> syncPendingAudios() async {
     print('🎤 === SINCRONIZANDO ÁUDIOS PENDENTES ===');
+
+    // Web: nada em disco para sincronizar (Fase 2 do plano web troca por
+    // MediaStore/IndexedDB).
+    if (!PlatformCaps.hasFileSystem) return 0;
 
     try {
       final appDocDir = await getApplicationDocumentsDirectory();
@@ -1470,6 +1542,14 @@ class FormProvider with ChangeNotifier {
       } catch (e, stackTrace) {
         print('❌ ERRO CRÍTICO na sincronização de áudios: $e');
         print('📋 Stack trace: $stackTrace');
+      }
+
+      // 4. Versão web: mídias pendentes do IndexedDB (fases 2 e 3 acima são
+      // no-op na web; esta é no-op no nativo)
+      if (!PlatformCaps.hasFileSystem) {
+        print('🌐 === FASE 4: SINCRONIZANDO MÍDIAS WEB (IndexedDB) ===');
+        totalSynced += await syncWebPendingMedia('photo');
+        totalSynced += await syncWebPendingMedia('audio');
       }
 
       print('📊 === SINCRONIZAÇÃO COMPLETA CONCLUÍDA ===');

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/form_response.dart';
@@ -147,6 +148,65 @@ class ApiService {
       }
     } catch (e) {
       throw Exception('Failed to upload photo: $e');
+    }
+  }
+
+  /// Upload de foto a partir de bytes (versão web — mídias vêm do
+  /// IndexedDB via WebMediaStore, não de arquivos).
+  static Future<Map<String, dynamic>> uploadPhotoBytes(
+      Uint8List bytes, String filename) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/photos/upload'),
+      );
+
+      final headers = await _getHeaders();
+      request.headers.addAll(headers);
+      request.files.add(
+        http.MultipartFile.fromBytes('photo', bytes, filename: filename),
+      );
+
+      final response = await request.send();
+      final responseBody = await response.stream.bytesToString();
+      final responseData = jsonDecode(responseBody);
+
+      if (response.statusCode == 200) {
+        return responseData;
+      } else {
+        throw Exception(responseData['message'] ?? 'Failed to upload photo');
+      }
+    } catch (e) {
+      throw Exception('Failed to upload photo: $e');
+    }
+  }
+
+  /// Upload de áudio a partir de bytes (versão web).
+  static Future<Map<String, dynamic>> uploadAudioBytes(
+      Uint8List bytes, String filename) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/audios/upload'),
+      );
+
+      final headers = await _getHeaders();
+      request.headers.addAll(headers);
+      request.files.add(
+        http.MultipartFile.fromBytes('audio', bytes, filename: filename),
+      );
+
+      final response = await request.send();
+      final responseBody = await response.stream.bytesToString();
+      final responseData = jsonDecode(responseBody);
+
+      if (response.statusCode == 200) {
+        return responseData;
+      } else {
+        throw Exception(responseData['message'] ?? 'Failed to upload audio');
+      }
+    } catch (e) {
+      throw Exception('Failed to upload audio: $e');
     }
   }
 

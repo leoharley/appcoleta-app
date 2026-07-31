@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:provider/provider.dart';
 import 'dart:io';
 import '../models/questionnaire.dart';
@@ -304,8 +305,9 @@ class _FormCompletedScreenState extends State<FormCompletedScreen> {
       _locationName = 'Localização não disponível';
     }
 
-    // Configurar foto
-    if (_finalPhotoPath != null && _finalPhotoPath!.isNotEmpty) {
+    // Configurar foto (na web não há File — o preview fica sem imagem,
+    // a foto em si está guardada no IndexedDB aguardando sincronização)
+    if (!kIsWeb && _finalPhotoPath != null && _finalPhotoPath!.isNotEmpty) {
       final photoFile = File(_finalPhotoPath!);
       if (photoFile.existsSync()) {
         _capturedPhoto = photoFile;

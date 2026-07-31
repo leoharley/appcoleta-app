@@ -66,6 +66,18 @@ class Stratum {
     );
   }
 
+  /// Serializa com as MESMAS chaves que [fromJson] lê, para o cache local
+  /// voltar pelo mesmo caminho de parsing do servidor.
+  Map<String, dynamic> toJson() => {
+        'stratum_id': stratumId,
+        'option_value': optionValue,
+        'option_label': optionLabel,
+        'target_quota': targetQuota,
+        'current_count': currentCount,
+        'percentage': percentage,
+        'quota_reached': quotaReached,
+      };
+
   int get remaining => targetQuota - currentCount;
 }
 
@@ -101,6 +113,16 @@ class StratificationCategory {
           .toList(),
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'category_id': categoryId,
+        'category_name': categoryName,
+        'question_id': questionId,
+        'total_target': totalTarget,
+        'total_current': totalCurrent,
+        'percentage': percentage,
+        'strata': strata.map((s) => s.toJson()).toList(),
+      };
 }
 
 class OverallProgress {
@@ -121,6 +143,12 @@ class OverallProgress {
       percentage: _parseDouble(json['percentage']),
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'total_target': totalTarget,
+        'total_current': totalCurrent,
+        'percentage': percentage,
+      };
 }
 
 class StratificationData {
@@ -158,6 +186,15 @@ class StratificationData {
           .toList(),
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'questionnaire_id': questionnaireId,
+        'stratification_id': stratificationId,
+        'title': title,
+        'is_active': isActive,
+        'overall_progress': overallProgress.toJson(),
+        'categories': categories.map((c) => c.toJson()).toList(),
+      };
 
   /// Retorna informações de alerta se a opção selecionada tem cota atingida.
   /// Retorna null se não encontrada ou cota não atingida.

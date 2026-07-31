@@ -1,11 +1,11 @@
 {
-    "name": "appcoleta",
-    "short_name": "appcoleta",
+    "name": "App Coleta - Instituto Alves Lima",
+    "short_name": "App Coleta",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#F5F5F5",
+    "theme_color": "#23345F",
+    "description": "Aplicativo de coleta de dados e questionários com suporte offline.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

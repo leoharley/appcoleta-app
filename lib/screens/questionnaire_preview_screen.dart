@@ -7,6 +7,7 @@ import '../models/questionnaire.dart';
 import '../models/stratification.dart';
 import '../providers/stratification_provider.dart';
 import '../providers/questionnaire_provider.dart';
+import '../services/platform_caps.dart';
 import 'consent_screen.dart';
 import 'question_screen.dart';
 import 'stratification_dashboard_screen.dart';
@@ -90,7 +91,9 @@ class _QuestionnairePreviewScreenState
                                   );
                                 }
                                 if (!stratProvider.hasStratification) {
-                                  // Mostrar erro se houver
+                                  // Mostrar erro se houver. A mensagem é escrita
+                                  // para o aplicador — nada de exceção crua com
+                                  // URL da API, que não ajuda em campo.
                                   if (stratProvider.errorMessage != null) {
                                     return Padding(
                                       padding: const EdgeInsets.only(top: 20),
@@ -108,7 +111,8 @@ class _QuestionnairePreviewScreenState
                                             const SizedBox(width: 8),
                                             Expanded(
                                               child: Text(
-                                                'Estratificação: ${stratProvider.errorMessage}',
+                                                'Estratificação indisponível: ${stratProvider.errorMessage}. '
+                                                'Conecte-se à internet uma vez para baixá-la.',
                                                 style: const TextStyle(fontSize: 12, color: Color(0xFFBF6D16)),
                                               ),
                                             ),
@@ -123,6 +127,12 @@ class _QuestionnairePreviewScreenState
                                   padding: const EdgeInsets.only(top: 20),
                                   child: Column(
                                     children: [
+                                      if (stratProvider.isFromCache) ...[
+                                        _OfflineStratificationNotice(
+                                          cachedAt: stratProvider.cachedAt!,
+                                        ),
+                                        const SizedBox(height: 8),
+                                      ],
                                       _StratificationCard(
                                         data: stratProvider.stratification!,
                                       ),
@@ -529,9 +539,13 @@ class _QuestionnairePreviewScreenState
     final missing = <String>[];
 
     // Microfone: a gravação de áudio é automática durante toda a aplicação.
-    final micStatus = await Permission.microphone.request();
-    if (!micStatus.isGranted) {
-      missing.add('Microfone — gravação de áudio da entrevista');
+    // Na web, o permission_handler não existe — o navegador pede a permissão
+    // no momento do uso (gravação por segmentos, Fase 4 do plano web).
+    if (PlatformCaps.hasPermissionHandler) {
+      final micStatus = await Permission.microphone.request();
+      if (!micStatus.isGranted) {
+        missing.add('Microfone — gravação de áudio da entrevista');
+      }
     }
 
     // Localização (apenas se o questionário exige).
@@ -552,7 +566,8 @@ class _QuestionnairePreviewScreenState
     }
 
     // Câmera (apenas se o questionário exige foto de evidência).
-    if (questionnaire.requiresPhoto) {
+    // Na web, o prompt de câmera é do navegador, na hora da captura.
+    if (questionnaire.requiresPhoto && PlatformCaps.hasPermissionHandler) {
       final camStatus = await Permission.camera.request();
       if (!camStatus.isGranted) {
         missing.add('Câmera — foto de evidência');
@@ -597,12 +612,17 @@ class _QuestionnairePreviewScreenState
               ),
             ),
             const SizedBox(height: 12),
-            const Text(
-              'Como resolver: toque em "Abrir Configurações", conceda as '
-              'permissões listadas e volte para iniciar o questionário. '
-              'Se o GPS estiver desativado, ative a localização nas '
-              'configurações rápidas do aparelho.',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
+            Text(
+              PlatformCaps.hasPermissionHandler
+                  ? 'Como resolver: toque em "Abrir Configurações", conceda '
+                      'as permissões listadas e volte para iniciar o '
+                      'questionário. Se o GPS estiver desativado, ative a '
+                      'localização nas configurações rápidas do aparelho.'
+                  : 'Como resolver: toque no cadeado ao lado do endereço do '
+                      'site, permita Localização/Câmera/Microfone e '
+                      'recarregue a página. Se o GPS estiver desativado, '
+                      'ative a localização do aparelho.',
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ],
         ),
@@ -611,17 +631,18 @@ class _QuestionnairePreviewScreenState
             onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Fechar'),
           ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(dialogContext);
-              openAppSettings();
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFE8962E),
-              foregroundColor: Colors.white,
+          if (PlatformCaps.hasPermissionHandler)
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                openAppSettings();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE8962E),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Abrir Configurações'),
             ),
-            child: const Text('Abrir Configurações'),
-          ),
         ],
       ),
     );
@@ -687,6 +708,47 @@ class _StratificationLoadingCard extends StatelessWidget {
           Text(
             'Carregando estratificação...',
             style: TextStyle(fontSize: 13, color: Colors.grey),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Faixa exibida quando a estratificação veio do cache local (offline).
+/// Os números continuam visíveis, mas o aplicador precisa saber que eles
+/// podem estar defasados em relação ao painel.
+class _OfflineStratificationNotice extends StatelessWidget {
+  final DateTime cachedAt;
+
+  const _OfflineStratificationNotice({required this.cachedAt});
+
+  @override
+  Widget build(BuildContext context) {
+    final d = cachedAt;
+    final data = '${d.day.toString().padLeft(2, '0')}/'
+        '${d.month.toString().padLeft(2, '0')}/${d.year}';
+    final hora = '${d.hour.toString().padLeft(2, '0')}:'
+        '${d.minute.toString().padLeft(2, '0')}';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF3E0),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE8962E).withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.cloud_off, color: Color(0xFFE8962E), size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Sem conexão — cotas de $data às $hora. '
+              'Os números podem ter mudado no painel desde então.',
+              style: const TextStyle(fontSize: 12, color: Color(0xFFBF6D16)),
+            ),
           ),
         ],
       ),
