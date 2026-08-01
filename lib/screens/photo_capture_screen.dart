@@ -9,6 +9,7 @@ import '../models/questionnaire.dart';
 import '../providers/form_provider.dart';
 import '../services/platform_caps.dart';
 import '../services/web_media_store/web_media_store.dart';
+import '../widgets/location_required_dialog.dart';
 import 'form_completed_screen.dart';
 
 class PhotoCaptureScreen extends StatefulWidget {
@@ -754,8 +755,9 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
 
   /// Garante que há coordenadas gravadas no formulário antes de finalizar.
   /// Tenta capturar em laço: a cada falha explica o motivo e oferece nova
-  /// tentativa. Retorna false apenas se o aplicador desistir — e nesse caso a
-  /// finalização não acontece.
+  /// tentativa. Retorna false apenas se o aplicador voltar sem finalizar —
+  /// se ele optar por concluir sem sinal, o formulário segue marcado como
+  /// "Sem localização".
   Future<bool> _ensureLocationOrBlock() async {
     final formProvider = Provider.of<FormProvider>(context, listen: false);
 
@@ -769,41 +771,20 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
       if (motivo == null) return true;
 
       if (!mounted) return false;
-      final tentarNovamente = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (dialogContext) => AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.location_off, color: Color(0xFFE8962E)),
-              SizedBox(width: 8),
-              Expanded(child: Text('Localização obrigatória')),
-            ],
-          ),
-          content: Text(
-            '$motivo\n\n'
-            'Este questionário só pode ser finalizado com a localização '
-            'registrada.',
-            style: const TextStyle(fontSize: 14),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancelar'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFE8962E),
-                foregroundColor: Colors.white,
-              ),
-              child: const Text('Tentar novamente'),
-            ),
-          ],
-        ),
-      );
+      final decisao = await showLocationRequiredDialog(context, motivo);
 
-      if (tentarNovamente != true) return false;
+      switch (decisao) {
+        case LocationDialogAction.retry:
+          continue;
+        case LocationDialogAction.finishWithout:
+          formProvider.markLocationUnavailable();
+          print('📍 Finalizando sem coordenadas por decisão do aplicador');
+          return true;
+        case LocationDialogAction.cancel:
+        case null:
+          print('📍 Aplicador cancelou — não finalizou');
+          return false;
+      }
     }
   }
 

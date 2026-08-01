@@ -583,6 +583,28 @@ class FormProvider with ChangeNotifier {
     }
   }
 
+  /// Marca o formulário como concluído sem coordenadas, quando o GPS não pegou
+  /// sinal e o aplicador optou por finalizar mesmo assim.
+  ///
+  /// Latitude e longitude ficam nulas e `location_name` vai como
+  /// "Sem localização": no painel isso distingue um questionário em que a
+  /// captura falhou de um que simplesmente nunca exigiu localização — os dois
+  /// chegariam com as coordenadas em branco.
+  void markLocationUnavailable() {
+    if (_currentForm == null) {
+      print('⚠️ Tentativa de marcar "sem localização" sem formulário ativo');
+      return;
+    }
+
+    try {
+      _currentForm = _currentForm!.copyWith(locationName: kSemLocalizacao);
+      print('📍 Formulário marcado como "$kSemLocalizacao"');
+      notifyListeners();
+    } catch (e) {
+      print('❌ Erro ao marcar formulário sem localização: $e');
+    }
+  }
+
   /// Define a foto
   void setPhoto(String photoPath) {
     print('📸 Definindo foto: $photoPath');

@@ -16,6 +16,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../providers/auth_provider.dart';
 import '../services/platform_caps.dart';
 import '../services/web_media_store/web_media_store.dart';
+import '../widgets/location_required_dialog.dart';
 
 class QuestionScreen extends StatefulWidget {
   final Questionnaire questionnaire;
@@ -860,8 +861,9 @@ class _QuestionScreenState extends State<QuestionScreen>
   }
 
   /// Tenta capturar as coordenadas em laço: a cada falha explica o motivo ao
-  /// aplicador e oferece "Tentar novamente". Só libera a finalização com
-  /// latitude/longitude gravadas no formulário.
+  /// aplicador e oferece tentar de novo. Só libera a finalização com as
+  /// coordenadas gravadas — ou com o formulário marcado como "Sem localização",
+  /// quando o aplicador decide concluir sem sinal de GPS.
   Future<bool> _ensureLocationOrBlock(FormProvider formProvider) async {
     while (true) {
       // Já capturada (ex.: edição com localização preservada)? Não recapturar.
@@ -874,10 +876,19 @@ class _QuestionScreenState extends State<QuestionScreen>
       if (falha == null) return true;
 
       if (!mounted) return false;
-      final tentarNovamente = await _showLocationRequiredDialog(falha);
-      if (tentarNovamente != true) {
-        print('📍 Aplicador desistiu — finalização bloqueada sem localização');
-        return false;
+      final decisao = await showLocationRequiredDialog(context, falha);
+
+      switch (decisao) {
+        case LocationDialogAction.retry:
+          continue;
+        case LocationDialogAction.finishWithout:
+          formProvider.markLocationUnavailable();
+          print('📍 Finalizando sem coordenadas por decisão do aplicador');
+          return true;
+        case LocationDialogAction.cancel:
+        case null:
+          print('📍 Aplicador voltou ao questionário — não finalizou');
+          return false;
       }
     }
   }
@@ -923,42 +934,6 @@ class _QuestionScreenState extends State<QuestionScreen>
       return 'Não foi possível obter o sinal de GPS. Vá para um local mais '
           'aberto, longe de paredes e coberturas, e tente novamente.';
     }
-  }
-
-  Future<bool?> _showLocationRequiredDialog(String motivo) {
-    return showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.location_off, color: Color(0xFFE8962E)),
-            SizedBox(width: 8),
-            Expanded(child: Text('Localização obrigatória')),
-          ],
-        ),
-        content: Text(
-          '$motivo\n\n'
-          'Este questionário só pode ser finalizado com a localização '
-          'registrada.',
-          style: const TextStyle(fontSize: 14),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Voltar ao questionário'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFE8962E),
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Tentar novamente'),
-          ),
-        ],
-      ),
-    );
   }
 
   Future<void> _submitAndNavigate(FormProvider formProvider) async {

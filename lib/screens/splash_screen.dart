@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter/foundation.dart';
 import '../providers/auth_provider.dart';
+import '../services/pwa_install/pwa_install.dart';
 import 'login_screen.dart';
 import 'dashboard_screen.dart';
 
@@ -57,18 +58,31 @@ class _SplashScreenState extends State<SplashScreen> {
 
   void _navigateToNextScreen(bool isAuthenticated) {
     if (!mounted) return;
-    
+
+    // No navegador do celular o acesso é barrado na LoginScreen, que explica o
+    // motivo e oferece a instalação. Uma sessão salva pularia essa tela e
+    // entraria direto no dashboard, furando a regra — por isso mandamos para o
+    // login mesmo autenticado.
+    final bloqueadoNoNavegador = PwaInstall.disponivelNaPlataforma &&
+        PwaInstall.ehCelular &&
+        !PwaInstall.emModoApp;
+
+    final irParaDashboard = isAuthenticated && !bloqueadoNoNavegador;
+
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
-        builder: (context) => isAuthenticated 
-          ? const DashboardScreen() 
+        builder: (context) => irParaDashboard
+          ? const DashboardScreen()
           : const LoginScreen(),
       ),
     );
-    
+
     if (kDebugMode) {
-      print('📱 Navegando para: ${isAuthenticated ? 'Dashboard' : 'Login'}');
+      print('📱 Navegando para: ${irParaDashboard ? 'Dashboard' : 'Login'}');
+      if (bloqueadoNoNavegador) {
+        print('🚫 Navegador do celular: acesso só pelo app instalado');
+      }
     }
   }
 
@@ -143,7 +157,7 @@ class _SplashScreenState extends State<SplashScreen> {
               
               // Versão (posicionada mais baixo)
               const Text(
-                'Versão: 2.2.0',
+                'Versão: 2.5.0',
                 style: TextStyle(
                   fontSize: 12,
                   color: Colors.grey,

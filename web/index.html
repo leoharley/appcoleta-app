@@ -42,6 +42,111 @@
 
   <script>
     // -----------------------------------------------------------------------
+    // Instalação do PWA.
+    //
+    // O navegador dispara 'beforeinstallprompt' quando o app é instalável, e o
+    // banner nativo do Chrome some sozinho (ou depois de dispensado uma vez).
+    // Guardamos o evento para que a tela de login possa oferecer o botão
+    // INSTALAR na hora que o aplicador quiser, e não só quando o Chrome decide.
+    //
+    // O iPhone não tem esse evento nem instalação programática: lá o caminho é
+    // Compartilhar > Adicionar à Tela de Início, e o app mostra as instruções.
+    // -----------------------------------------------------------------------
+    (function () {
+      var estado = { deferido: null, instalado: false, aoMudar: null };
+
+      function avisar() {
+        if (typeof estado.aoMudar === 'function') {
+          try { estado.aoMudar(); } catch (e) { /* app ainda carregando */ }
+        }
+      }
+
+      window.addEventListener('beforeinstallprompt', function (e) {
+        // Impede o banner automático: quem controla o momento é a tela de login.
+        e.preventDefault();
+        estado.deferido = e;
+        avisar();
+      });
+
+      window.addEventListener('appinstalled', function () {
+        estado.deferido = null;
+        estado.instalado = true;
+        avisar();
+      });
+
+      window.pwaPodeInstalar = function () {
+        return !!estado.deferido;
+      };
+
+      // ESTA PÁGINA está rodando pelo ícone, fora do navegador?
+      //
+      // É a pergunta que libera o login, e ela NÃO pode considerar o evento
+      // 'appinstalled': ele dispara na própria aba do navegador que fez a
+      // instalação, e essa aba continua sendo navegador. Confundir as duas
+      // coisas liberava o login logo após instalar, justamente o que o portão
+      // existe para impedir.
+      //
+      // Testa os três modos "sem barra de endereço" de propósito: a media query
+      // casa com o modo EFETIVO, que vem do campo "display" do manifest.json.
+      // Checar só 'standalone' amarraria o login a esse valor — trocar o
+      // manifest para 'fullscreen' ou 'minimal-ui' trancaria todo mundo do lado
+      // de fora, e o motivo seria dificílimo de achar.
+      //
+      // navigator.standalone é o caminho do iPhone (existe desde o iOS 2 e
+      // continua sendo o mais confiável lá).
+      window.pwaEmModoApp = function () {
+        if (window.navigator.standalone === true) return true;
+
+        var modos = ['standalone', 'fullscreen', 'minimal-ui'];
+        for (var i = 0; i < modos.length; i++) {
+          try {
+            if (window.matchMedia('(display-mode: ' + modos[i] + ')').matches) {
+              return true;
+            }
+          } catch (e) { /* navegador sem suporte à media query */ }
+        }
+        return false;
+      };
+
+      // O app está instalado NO APARELHO? Pergunta diferente da de cima: serve
+      // para esconder o convite de instalação, não para liberar o acesso.
+      window.pwaEstaInstalado = function () {
+        return estado.instalado || window.pwaEmModoApp();
+      };
+
+      window.pwaEhIos = function () {
+        return /iPad|iPhone|iPod/.test(window.navigator.userAgent);
+      };
+
+      // Usado para exigir o app instalado só no celular — é lá que o aplicador
+      // trabalha e que a produção corre risco de se dividir entre navegador e
+      // ícone. No desktop o acesso pelo navegador segue liberado.
+      window.pwaEhCelular = function () {
+        var ua = window.navigator.userAgent;
+        return /Android|iPad|iPhone|iPod|Windows Phone|webOS|BlackBerry|Opera Mini|IEMobile/
+          .test(ua);
+      };
+
+      // Retorna 'aceito', 'recusado' ou 'indisponivel'.
+      window.pwaInstalar = function () {
+        var e = estado.deferido;
+        if (!e) return Promise.resolve('indisponivel');
+        e.prompt();
+        return e.userChoice.then(function (escolha) {
+          estado.deferido = null;
+          avisar();
+          return escolha && escolha.outcome === 'accepted'
+            ? 'aceito'
+            : 'recusado';
+        });
+      };
+
+      window.pwaRegistrarCallback = function (cb) {
+        estado.aoMudar = cb;
+      };
+    })();
+
+    // -----------------------------------------------------------------------
     // Atualização do app publicado, sem depender de limpeza de cache.
     //
     // O service worker do Flutter continua servindo a versão instalada mesmo

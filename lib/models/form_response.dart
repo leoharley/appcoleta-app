@@ -1,5 +1,14 @@
 import 'question_response.dart';
 
+/// Valor gravado em [FormResponse.locationName] (`location_name` no payload)
+/// quando o questionário exigia localização mas o GPS não pegou sinal e o
+/// aplicador concluiu mesmo assim.
+///
+/// Sem essa marca, o registro chegaria ao painel apenas com as coordenadas em
+/// branco — indistinguível de um questionário que nunca pediu localização.
+/// Se o painel for exibir/filtrar por isso, o texto precisa bater exatamente.
+const String kSemLocalizacao = 'Sem localização';
+
 class FormResponse {
   final int? id;
   final int questionnaireId;
