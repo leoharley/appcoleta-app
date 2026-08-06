@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -90,40 +91,78 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> submitForm(FormResponse form) async {
-    try {
-      final formJson = form.toJson();
+    final formJson = form.toJson();
 
-      // IDs locais são timestamps (millisecondsSinceEpoch, ~10^12) gerados
-      // pelo app para controle offline — o servidor não os conhece e um
-      // INTEGER no banco nem comporta o valor, derrubando a sincronização.
-      // Só enviar o id quando for um id real do servidor (modo de edição).
-      final dynamic formId = formJson['id'];
-      if (formId is int && formId >= 100000000000) {
-        formJson.remove('id');
-      }
-
-      // Debug: verificar se photo_path_2 está sendo enviado
-      print('📤 === ENVIANDO FORMULÁRIO PARA API ===');
-      print('📸 photo_path: ${formJson['photo_path']}');
-      print('📸 photo_path_2: ${formJson['photo_path_2']}');
-      print('📋 JSON completo: ${jsonEncode(formJson)}');
-
-      final response = await http.post(
-        Uri.parse('$baseUrl/forms/submit'),
-        headers: await _getHeaders(),
-        body: jsonEncode(formJson),
-      );
-
-      final responseData = jsonDecode(response.body);
-
-      if (response.statusCode == 200) {
-        return responseData;
-      } else {
-        throw Exception(responseData['message'] ?? 'Failed to submit form');
-      }
-    } catch (e) {
-      throw Exception('Failed to submit form: $e');
+    // IDs locais são timestamps (millisecondsSinceEpoch, ~10^12) gerados
+    // pelo app para controle offline — o servidor não os conhece e um
+    // INTEGER no banco nem comporta o valor, derrubando a sincronização.
+    // Só enviar o id quando for um id real do servidor (modo de edição).
+    final dynamic formId = formJson['id'];
+    if (formId is int && formId >= 100000000000) {
+      formJson.remove('id');
     }
+
+    // Debug: verificar se photo_path_2 está sendo enviado
+    print('📤 === ENVIANDO FORMULÁRIO PARA API ===');
+    print('📸 photo_path: ${formJson['photo_path']}');
+    print('📸 photo_path_2: ${formJson['photo_path_2']}');
+    print('📋 JSON completo: ${jsonEncode(formJson)}');
+
+    // Só a chamada de rede fica no try: os erros de resposta são levantados
+    // depois, fora dele. Com eles aqui dentro, o catch genérico os embrulhava
+    // de novo e a mensagem chegava como "Exception: Failed to submit form:
+    // Exception: Invalid token".
+    final http.Response response;
+    try {
+      response = await http
+          .post(
+            Uri.parse('$baseUrl/forms/submit'),
+            headers: await _getHeaders(),
+            body: jsonEncode(formJson),
+          )
+          // Sem timeout, uma conexão ruim de campo deixava a sincronização
+          // pendurada sem fim, com o botão travado em "sincronizando".
+          .timeout(const Duration(seconds: 45));
+    } on TimeoutException {
+      throw Exception(
+        'O servidor não respondeu em 45 segundos. Tente novamente com um '
+        'sinal melhor.',
+      );
+    } catch (e) {
+      throw Exception('Sem conexão com o servidor: $e');
+    }
+
+    // A resposta nem sempre é JSON: erro 500 do PHP, página de manutenção ou
+    // um warning impresso antes do payload chegam como HTML. Decodificar
+    // direto estourava FormatException, que subia como se fosse falha de
+    // rede e escondia o problema real do servidor.
+    Map<String, dynamic>? responseData;
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) responseData = decoded;
+    } catch (_) {
+      // Tratado abaixo, com o status e um trecho do corpo.
+    }
+
+    if (response.statusCode == 200 && responseData != null) {
+      return responseData;
+    }
+
+    // O status HTTP vai SEMPRE na mensagem. É por ele que a interface
+    // reconhece sessão expirada (401) — depender do texto "Invalid token"
+    // quebraria no dia em que o backend traduzisse a mensagem.
+    if (responseData != null) {
+      throw Exception(
+        'HTTP ${response.statusCode}: '
+        '${responseData['message'] ?? 'o servidor recusou o envio'}',
+      );
+    }
+
+    final trecho = response.body.trim().replaceAll(RegExp(r'\s+'), ' ');
+    throw Exception(
+      'HTTP ${response.statusCode} sem JSON válido: '
+      '${trecho.length > 160 ? '${trecho.substring(0, 160)}...' : trecho}',
+    );
   }
 
   static Future<Map<String, dynamic>> uploadPhoto(File photo) async {

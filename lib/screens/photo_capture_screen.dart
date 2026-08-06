@@ -8,6 +8,7 @@ import 'dart:typed_data';
 import '../models/questionnaire.dart';
 import '../providers/form_provider.dart';
 import '../services/platform_caps.dart';
+import '../services/location_service.dart';
 import '../services/web_media_store/web_media_store.dart';
 import '../widgets/location_required_dialog.dart';
 import 'form_completed_screen.dart';
@@ -790,6 +791,9 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
 
   /// Uma tentativa de captura. Retorna null em caso de sucesso, ou o motivo
   /// da falha já escrito para o aplicador.
+  ///
+  /// A estratégia em etapas — e o motivo de cada uma — está em
+  /// [LocationService.obterPosicao].
   Future<String?> _tryCaptureLocation(FormProvider formProvider) async {
     if (mounted) {
       setState(() {
@@ -798,42 +802,19 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
     }
 
     try {
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        return 'O GPS do aparelho está desligado. Ative a localização nas '
-            'configurações e tente novamente.';
-      }
+      final resultado = await LocationService.obterPosicao();
 
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
+      if (resultado.ok) {
+        final p = resultado.position!;
+        formProvider.setLocation(p.latitude, p.longitude, '');
+        if (mounted) {
+          setState(() {
+            _currentPosition = p;
+          });
+        }
+        return null;
       }
-
-      if (permission == LocationPermission.deniedForever) {
-        return 'A permissão de localização foi negada permanentemente. '
-            'Libere o acesso à localização nas configurações do aparelho.';
-      }
-      if (permission == LocationPermission.denied) {
-        return 'A permissão de localização não foi concedida. É obrigatória '
-            'para finalizar este questionário.';
-      }
-
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      ).timeout(const Duration(seconds: 15));
-
-      print('📍 Localização obtida: ${position.latitude}, ${position.longitude}');
-      formProvider.setLocation(position.latitude, position.longitude, '');
-      if (mounted) {
-        setState(() {
-          _currentPosition = position;
-        });
-      }
-      return null;
-    } catch (e) {
-      print('❌ Erro ao capturar localização: $e');
-      return 'Não foi possível obter o sinal de GPS. Vá para um local mais '
-          'aberto, longe de paredes e coberturas, e tente novamente.';
+      return resultado.erro;
     } finally {
       if (mounted) {
         setState(() {
@@ -843,59 +824,23 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
     }
   }
 
+  /// Botão manual de localização desta tela. Usa a mesma escada de tentativas
+  /// da finalização, para não haver dois comportamentos diferentes de captura
+  /// no mesmo aplicativo.
   Future<void> _getCurrentLocation() async {
     print('📍 Tentando obter localização');
-    
-    setState(() {
-      _isLoadingLocation = true;
-    });
 
-    try {
-      // Usar a API de permissão do próprio geolocator: no iOS, o
-      // permission_handler exige a macro PERMISSION_LOCATION=1 no Podfile e,
-      // sem ela, retorna "negado" sem exibir o diálogo. O geolocator fala
-      // direto com o CLLocationManager e funciona nas duas plataformas.
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-      print('📍 Permissão de localização: $permission');
+    final formProvider = Provider.of<FormProvider>(context, listen: false);
+    final motivo = await _tryCaptureLocation(formProvider);
 
-      if (permission != LocationPermission.denied &&
-          permission != LocationPermission.deniedForever) {
-        final position = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high,
-        );
-        
-        print('📍 Localização obtida: ${position.latitude}, ${position.longitude}');
-        
-        setState(() {
-          _currentPosition = position;
-        });
-        
-        try {
-          final formProvider = Provider.of<FormProvider>(context, listen: false);
-          formProvider.setLocation(
-            position.latitude, 
-            position.longitude, 
-            ''
-          );
-          print('✅ Localização salva no FormProvider');
-        } catch (e) {
-          print('❌ Erro ao salvar localização no FormProvider: $e');
-        }
-      } else {
-        print('❌ Permissão de localização negada');
-      }
-    } catch (e, stackTrace) {
-      print('❌ Erro ao obter localização: $e');
-      print('📋 Stack trace: $stackTrace');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoadingLocation = false;
-        });
-      }
+    if (motivo != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(motivo),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 6),
+        ),
+      );
     }
   }
 

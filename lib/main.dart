@@ -8,6 +8,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'providers/stats_provider.dart';
 import 'providers/form_provider.dart';
 import 'providers/history_provider.dart';
+import 'screens/login_screen.dart';
 import 'screens/splash_screen.dart';
 import 'utils/theme.dart';
 import '../providers/question_analysis_provider.dart';
@@ -64,6 +65,12 @@ class AppColetaApp extends StatelessWidget {
           Locale('en', 'US'), // Inglês (fallback)
         ],
         home: const SplashScreen(),
+        // A rota nomeada '/login' já era usada pelo dashboard (ação do aviso
+        // de sessão expirada), mas nunca esteve registrada — tocar no botão
+        // lançava exceção de rota desconhecida em vez de levar ao login.
+        routes: {
+          '/login': (_) => const LoginScreen(),
+        },
         debugShowCheckedModeBanner: false,
       ),
     );

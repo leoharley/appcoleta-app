@@ -4,7 +4,6 @@ import 'package:provider/provider.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:geolocator/geolocator.dart';
 import '../models/questionnaire.dart';
 import '../models/question.dart';
 import '../providers/form_provider.dart';
@@ -14,6 +13,7 @@ import 'photo_capture_screen.dart';
 import 'form_completed_screen.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../providers/auth_provider.dart';
+import '../services/location_service.dart';
 import '../services/platform_caps.dart';
 import '../services/web_media_store/web_media_store.dart';
 import '../widgets/location_required_dialog.dart';
@@ -64,6 +64,14 @@ class _QuestionScreenState extends State<QuestionScreen>
     // Tela ativa durante toda a aplicação (nativo e web): não deixar a tela
     // apagar no meio da entrevista/gravação.
     WakelockPlus.enable();
+
+    // Aquecer o GPS desde já, em vez de partir do zero na finalização: o
+    // primeiro fix pode levar bem mais de meio minuto num aparelho parado, e
+    // esperar isso no fim da entrevista era o que fazia a captura falhar.
+    if (widget.questionnaire.requiresLocation) {
+      LocationService.limpar();
+      LocationService.iniciarAquecimento();
+    }
 
     print('🚀 === QUESTION SCREEN INICIADO ===');
     print('📝 Número de questões: ${widget.questionnaire.questions.length}');
@@ -895,45 +903,34 @@ class _QuestionScreenState extends State<QuestionScreen>
 
   /// Executa uma tentativa de captura. Retorna null em caso de sucesso, ou a
   /// mensagem do motivo da falha (já escrita para o aplicador).
+  ///
+  /// A estratégia em etapas — e o motivo de cada uma — está em
+  /// [LocationService.obterPosicao].
   Future<String?> _tryCaptureLocation(FormProvider formProvider) async {
-    try {
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        return 'O GPS do aparelho está desligado. Ative a localização nas '
-            'configurações e tente novamente.';
-      }
-
-      // Usar a API de permissão do próprio geolocator: no iOS, o
-      // permission_handler exige a macro PERMISSION_LOCATION=1 no Podfile e,
-      // sem ela, retorna "negado" sem exibir o diálogo. O geolocator fala
-      // direto com o CLLocationManager e funciona nas duas plataformas.
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-      print('📍 Permissão de localização: $permission');
-
-      if (permission == LocationPermission.deniedForever) {
-        return 'A permissão de localização foi negada permanentemente. '
-            'Libere o acesso à localização nas configurações do aparelho.';
-      }
-      if (permission == LocationPermission.denied) {
-        return 'A permissão de localização não foi concedida. É obrigatória '
-            'para finalizar este questionário.';
-      }
-
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      ).timeout(const Duration(seconds: 15));
-
-      print('📍 Localização obtida: ${position.latitude}, ${position.longitude}');
-      formProvider.setLocation(position.latitude, position.longitude, '');
-      return null;
-    } catch (e) {
-      print('❌ Erro ao capturar localização: $e');
-      return 'Não foi possível obter o sinal de GPS. Vá para um local mais '
-          'aberto, longe de paredes e coberturas, e tente novamente.';
+    // A busca pode levar dezenas de segundos; sem aviso, o aplicador acha que
+    // o app travou e sai da tela.
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Obtendo localização...'),
+          backgroundColor: Color(0xFFE8962E),
+          duration: Duration(seconds: 30),
+        ),
+      );
     }
+
+    final resultado = await LocationService.obterPosicao();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).clearSnackBars();
+    }
+
+    if (resultado.ok) {
+      final p = resultado.position!;
+      formProvider.setLocation(p.latitude, p.longitude, '');
+      return null;
+    }
+    return resultado.erro;
   }
 
   Future<void> _submitAndNavigate(FormProvider formProvider) async {
@@ -1365,6 +1362,8 @@ class _QuestionScreenState extends State<QuestionScreen>
     }
     _audioRecorder.dispose();
     _pageController.dispose();
+    // Manter o GPS ligado depois de sair da tela consome bateria à toa.
+    LocationService.pararAquecimento();
     super.dispose();
   }
 }

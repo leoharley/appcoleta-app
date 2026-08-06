@@ -271,6 +271,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               padding: const EdgeInsets.all(20),
                               child: Column(
                                 children: [
+                                  _buildSessaoExpiradaBanner(),
                                   const SyncStatusCard(),
 
                                   /* const SizedBox(height: 10),
@@ -432,6 +433,86 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  /// Aviso fixo no topo enquanto o servidor considerar a sessão vencida.
+  ///
+  /// A sessão continua valendo localmente de propósito — derrubá-la tiraria o
+  /// acesso ao que ainda não subiu. Mas o aplicador precisa saber, e um
+  /// snackbar não serve: some em segundos e ele volta a coletar um dia inteiro
+  /// de trabalho que não vai sincronizar.
+  Widget _buildSessaoExpiradaBanner() {
+    return Consumer<AuthProvider>(
+      builder: (context, authProvider, _) {
+        if (!authProvider.sessaoRejeitadaPeloServidor) {
+          return const SizedBox.shrink();
+        }
+
+        return Container(
+          width: double.infinity,
+          margin: const EdgeInsets.only(bottom: 16),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFDECEA),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFFD32F2F), width: 1.2),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.lock_clock, color: Color(0xFFD32F2F), size: 22),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Sessão expirada',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFFB71C1C),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Seus questionários continuam salvos no aparelho, mas '
+                      'não vão subir para o painel até você entrar de novo.',
+                      style: TextStyle(fontSize: 13, color: Color(0xFF7F2A25)),
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () {
+                          Navigator.of(context)
+                              .pushReplacementNamed('/login');
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFD32F2F),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                        child: const Text(
+                          'FAZER LOGIN NOVAMENTE',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -633,24 +714,65 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             await _loadPendingForms();
 
                             if (mounted) {
+                              final erro = formProvider.lastSyncError;
+
+                              // Sessão expirada precisa de um caminho de saída:
+                              // sem isso, o aplicador tentava sincronizar em
+                              // laço achando que era falta de sinal.
+                              final isTokenError = erro != null &&
+                                  (erro.contains('HTTP 401') ||
+                                      erro.contains('401') ||
+                                      erro.contains('Invalid token') ||
+                                      erro.contains('Token expirado'));
+
+                              if (isTokenError) {
+                                // Deixa o aviso permanente no topo até o
+                                // aplicador refazer o login: um snackbar some
+                                // em segundos e ele voltaria a coletar sem
+                                // saber que nada vai subir.
+                                Provider.of<AuthProvider>(context, listen: false)
+                                    .marcarSessaoExpirada();
+                              }
+
                               String message;
                               Color color;
 
                               if (formsResult > 0) {
                                 message = 'Sincronização concluída! $formsResult ${formsResult == 1 ? 'item sincronizado' : 'itens sincronizados'}';
                                 color = const Color(0xFFE8962E);
+                              } else if (isTokenError) {
+                                message = 'Sessão expirada. Faça login novamente para sincronizar.';
+                                color = Colors.red;
+                              } else if (erro != null) {
+                                // Motivo real do servidor, em vez do genérico
+                                // "verifique sua conexão" que mandava o
+                                // aplicador procurar no lugar errado.
+                                message = 'Não sincronizou: $erro';
+                                color = Colors.red;
                               } else {
-                                message = 'Nenhum item foi sincronizado. Verifique sua conexão com a internet.';
+                                message = 'Nenhum item pendente para sincronizar.';
                                 color = Colors.orange;
                               }
 
-                              print('📱 Mostrando mensagem: $message (cor: ${formsResult > 0 ? 'verde' : 'laranja'})');
+                              print('📱 Mostrando mensagem: $message');
 
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
                                   content: Text(message),
                                   backgroundColor: color,
-                                  duration: const Duration(seconds: 4),
+                                  duration: Duration(
+                                    seconds: formsResult > 0 ? 4 : 8,
+                                  ),
+                                  action: isTokenError
+                                      ? SnackBarAction(
+                                          label: 'LOGIN',
+                                          textColor: Colors.white,
+                                          onPressed: () {
+                                            Navigator.of(context)
+                                                .pushReplacementNamed('/login');
+                                          },
+                                        )
+                                      : null,
                                 ),
                               );
                             }

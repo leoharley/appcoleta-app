@@ -1455,9 +1455,19 @@ class FormProvider with ChangeNotifier {
   }
 
   /// Sincroniza formulários e fotos pendentes
+  /// Motivo real da última falha de sincronização, para a interface poder
+  /// dizer o que aconteceu.
+  ///
+  /// Antes, cada erro do laço era só impresso no console e a contagem ficava
+  /// em zero — o aplicador via "verifique sua conexão" mesmo com sessão
+  /// expirada, erro 500 ou payload rejeitado, e não tinha como agir.
+  String? _lastSyncError;
+  String? get lastSyncError => _lastSyncError;
+
   Future<int> syncPendingForms() async {
     print('🔄 === SINCRONIZAÇÃO COMPLETA (FORMULÁRIOS + FOTOS) ===');
     print('🔄 Timestamp: ${DateTime.now()}');
+    _lastSyncError = null;
 
     try {
       int totalSynced = 0;
@@ -1472,6 +1482,7 @@ class FormProvider with ChangeNotifier {
       } catch (e, stackTrace) {
         print('❌ ERRO CRÍTICO ao buscar formulários pendentes: $e');
         print('📋 Stack trace: $stackTrace');
+        _lastSyncError = 'Não foi possível ler os formulários salvos: $e';
         return 0; // Retorna 0 se não conseguir buscar
       }
 
@@ -1516,10 +1527,13 @@ class FormProvider with ChangeNotifier {
             }
           } else {
             print('⚠️ Falha ao sincronizar formulário ${form.id}: ${result['message']}');
+            _lastSyncError = result['message']?.toString() ??
+                'O servidor recusou o formulário sem informar o motivo.';
           }
         } catch (e, stackTrace) {
           print('❌ Erro ao sincronizar formulário ${form.id}: $e');
           print('📋 Stack trace: $stackTrace');
+          _lastSyncError = e.toString().replaceAll('Exception: ', '');
         }
       }
 
@@ -1546,6 +1560,8 @@ class FormProvider with ChangeNotifier {
       } catch (e, stackTrace) {
         print('❌ ERRO CRÍTICO na sincronização de fotos: $e');
         print('📋 Stack trace: $stackTrace');
+        _lastSyncError ??= 'Erro ao enviar fotos: '
+            '${e.toString().replaceAll('Exception: ', '')}';
 
         // Debug adicional em caso de erro
         try {

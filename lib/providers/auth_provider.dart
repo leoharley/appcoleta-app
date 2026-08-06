@@ -10,12 +10,34 @@ class AuthProvider with ChangeNotifier {
   bool _isLoading = false;
   bool _isInitialized = false; // Para controlar se já verificou o status
 
+  /// O servidor já recusou este token, mas a sessão local foi mantida para
+  /// não bloquear o acesso ao que ainda não subiu.
+  ///
+  /// Existe porque a expiração era silenciosa: o app verificava o token na
+  /// abertura, ouvia do servidor que tinha vencido e guardava a informação
+  /// para si. O aplicador seguia coletando o dia inteiro e só descobria ao
+  /// tentar sincronizar — quando descobria.
+  bool _sessaoRejeitadaPeloServidor = false;
+
   User? get user => _user;
   bool get isAuthenticated => _isAuthenticated;
   bool get isLoading => _isLoading;
   bool get hasUser => _user != null;
   bool get isInitialized => _isInitialized;
   String? get userToken => null;
+  bool get sessaoRejeitadaPeloServidor => _sessaoRejeitadaPeloServidor;
+
+  /// Registra que o servidor recusou a sessão. Chamado na verificação de
+  /// abertura e também quando uma sincronização volta com 401 — é comum a
+  /// sessão vencer com o app já aberto.
+  void marcarSessaoExpirada() {
+    if (_sessaoRejeitadaPeloServidor) return;
+    _sessaoRejeitadaPeloServidor = true;
+    if (kDebugMode) {
+      print('⚠️ Sessão marcada como expirada no servidor');
+    }
+    notifyListeners();
+  }
 
   /// Verifica se o app foi atualizado e força logout se necessário
   Future<bool> _checkAppVersionAndForceLogoutIfUpdated() async {
@@ -324,6 +346,8 @@ class AuthProvider with ChangeNotifier {
       // Salvar token
       if (response.containsKey('token') && response['token'] != null) {
         await prefs.setString('auth_token', response['token']);
+        // Token novo em folha: o alerta de sessão vencida deixa de valer.
+        _sessaoRejeitadaPeloServidor = false;
         if (kDebugMode) {
           print('Token saved: ${response['token'].toString().substring(0, 10)}...');
         }
@@ -608,6 +632,21 @@ class AuthProvider with ChangeNotifier {
           print('✅ Token verificado com sucesso no servidor');
         }
 
+        // Renovação deslizante: se o servidor devolver um token novo nesta
+        // verificação, ele substitui o atual e o prazo recomeça. Assim o
+        // aplicador que abre o app de tempos em tempos nunca chega a expirar,
+        // em vez de depender só do prazo fixo do backend.
+        //
+        // Antes esse campo era ignorado — se o servidor já mandasse um token
+        // renovado, ele era jogado fora e a expiração vinha do mesmo jeito.
+        final novoToken = response['token'];
+        if (novoToken is String && novoToken.isNotEmpty) {
+          await prefs.setString('auth_token', novoToken);
+          if (kDebugMode) {
+            print('🔄 Token renovado pelo servidor');
+          }
+        }
+
         // Atualizar dados do usuário se disponível
         if (response.containsKey('user') && response['user'] != null) {
           _user = User.fromJson(response['user']);
@@ -615,6 +654,9 @@ class AuthProvider with ChangeNotifier {
         }
 
         _isAuthenticated = true;
+        // O servidor aceitou: qualquer alerta anterior de sessão vencida
+        // deixa de valer.
+        _sessaoRejeitadaPeloServidor = false;
       } else {
         // Token inválido no servidor - NÃO fazer logout automático
         // O usuário só perde a sessão ao clicar em "Sair"
@@ -622,8 +664,14 @@ class AuthProvider with ChangeNotifier {
           print('⚠️ Token inválido no servidor, mas mantendo sessão offline');
           print('⚠️ Usuário permanece logado até fazer logout manual');
         }
-        // Mantém autenticado com dados locais
+        // Mantém autenticado com dados locais — derrubar aqui faria o
+        // aplicador perder o acesso ao que ainda não sincronizou.
         _isAuthenticated = true;
+
+        // Mas o app para de guardar isso só para si: a interface avisa, e o
+        // aplicador refaz o login antes de acumular um dia de trabalho que
+        // não vai subir.
+        marcarSessaoExpirada();
       }
     } catch (e) {
       if (kDebugMode) {
