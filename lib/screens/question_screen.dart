@@ -53,7 +53,6 @@ class _QuestionScreenState extends State<QuestionScreen>
   String? _webSessionId;
   String? _webFirstSegmentFilename;
   String _webAudioExt = 'm4a';
-  Timer? _webFlushTimer;
 
   @override
   void initState() {
@@ -446,23 +445,16 @@ class _QuestionScreenState extends State<QuestionScreen>
             ),
           ],
         ),
-        // Indicador de gravação de áudio
+        // Indicador de gravação de áudio.
+        //
+        // Só indicador: não responde a toque. Antes, tocar aqui encerrava a
+        // gravação, e um toque acidental no meio da entrevista cortava o áudio
+        // sem que o aplicador percebesse. A gravação agora termina apenas com
+        // a finalização do questionário.
         if (_isRecording)
           Padding(
             padding: const EdgeInsets.only(top: 8),
-            child: GestureDetector(
-              onTap: () async {
-                final path = await _stopRecording();
-                if (path != null && mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Gravação de áudio parada manualmente'),
-                      backgroundColor: Colors.orange,
-                    ),
-                  );
-                }
-              },
-              child: Container(
+            child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
                   color: Colors.red.shade50,
@@ -489,12 +481,9 @@ class _QuestionScreenState extends State<QuestionScreen>
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Icon(Icons.stop, color: Colors.red.shade700, size: 16),
                   ],
                 ),
               ),
-            ),
           ),
       ],
     ),
@@ -809,16 +798,17 @@ class _QuestionScreenState extends State<QuestionScreen>
             print('🎤 Áudio salvo no formulário: $audioPath');
           }
         } else {
-          // Web: fecha o último segmento e vincula o primeiro ao formulário.
+          // Web: fecha a gravação e vincula o arquivo ao formulário.
           final firstSegment = await _finishWebRecording();
           if (firstSegment != null) {
             formProvider.setAudio(firstSegment);
-            print('🎤 Web: áudio por segmentos vinculado: $firstSegment');
+            print('🎤 Web: áudio vinculado ao formulário: $firstSegment');
           }
         }
       } else if (_audioPath != null) {
-        // Gravação parada manualmente pelo usuário: anexar o áudio já gravado
-        // mesmo assim, senão o arquivo se perde.
+        // Rede de segurança: a gravação não deveria parar antes da
+        // finalização, mas se tiver parado (falha do gravador, interrupção do
+        // sistema), o arquivo já gravado é anexado em vez de se perder.
         formProvider.setAudio(_audioPath!);
         print('🎤 Áudio (parado manualmente) salvo no formulário: $_audioPath');
       }
@@ -1241,11 +1231,15 @@ class _QuestionScreenState extends State<QuestionScreen>
         }
       });
 
-      // Flush periódico: em caso de fechamento abrupto da página, perde-se
-      // no máximo o último minuto.
-      _webFlushTimer ??= Timer.periodic(const Duration(seconds: 60), (_) {
-        _rotateWebSegment();
-      });
+      // Sem corte periódico: a gravação corre do início ao fim do
+      // questionário, num arquivo só.
+      //
+      // Existia aqui um flush a cada 60 s, pensado para limitar a perda em um
+      // fechamento abrupto da página. O efeito colateral era grave: só o
+      // primeiro segmento é vinculado ao formulário (audio_path), e o painel
+      // ainda não recebe os demais — na prática, todo áudio depois do primeiro
+      // minuto sumia. Perder um minuto em caso raro custava menos que perder
+      // a entrevista inteira em todos os casos.
 
       if (mounted) {
         setState(() {
@@ -1285,17 +1279,13 @@ class _QuestionScreenState extends State<QuestionScreen>
     }
   }
 
-  Future<void> _rotateWebSegment() async {
-    await _flushWebSegment();
-    await _startWebSegment();
-  }
-
-  /// Encerra a gravação web: fecha o último segmento e retorna o nome do
-  /// primeiro (vinculado ao formulário em audio_path; os demais seguem o
-  /// mesmo prefixo de sessão).
+  /// Encerra a gravação web: fecha o áudio e retorna o nome do arquivo
+  /// vinculado ao formulário (audio_path).
+  ///
+  /// No caminho normal existe um arquivo só, do início ao fim do questionário.
+  /// Se houve interrupção (aba oculta/tela bloqueada), os arquivos seguintes
+  /// compartilham o mesmo prefixo de sessão.
   Future<String?> _finishWebRecording() async {
-    _webFlushTimer?.cancel();
-    _webFlushTimer = null;
     _recordingTimer?.cancel();
     _recordingTimer = null;
     await _flushWebSegment();
@@ -1356,7 +1346,6 @@ class _QuestionScreenState extends State<QuestionScreen>
     WidgetsBinding.instance.removeObserver(this);
     WakelockPlus.disable();
     _recordingTimer?.cancel();
-    _webFlushTimer?.cancel();
     if (_isRecording) {
       _audioRecorder.stop();
     }

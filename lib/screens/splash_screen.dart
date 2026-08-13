@@ -157,7 +157,7 @@ class _SplashScreenState extends State<SplashScreen> {
               
               // Versão (posicionada mais baixo)
               const Text(
-                'Versão: 2.6.0',
+                'Versão: 2.7.0',
                 style: TextStyle(
                   fontSize: 12,
                   color: Colors.grey,
