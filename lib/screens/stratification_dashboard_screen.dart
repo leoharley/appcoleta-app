@@ -75,36 +75,25 @@ class _StratificationDashboardScreenState
             );
           }
 
+          // Falha de rede / HTTP != 200 / erro de parse. Precisa ser
+          // visualmente distinto de "não configurado": antes os dois casos
+          // caíam na mesma tela zerada e não dava para saber se o
+          // questionário não tinha estratificação ou se algo quebrou.
+          if (provider.hasError) {
+            return _buildMessage(
+              icon: Icons.cloud_off,
+              iconColor: const Color(0xFFDC3545),
+              title: 'Erro ao carregar a estratificação',
+              detail: provider.errorMessage,
+            );
+          }
+
           if (!provider.hasStratification) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(32),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.bar_chart_outlined,
-                      size: 64,
-                      color: Color(0xFF6C757D),
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'Nenhuma estratificação configurada para este questionário.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: Color(0xFF6C757D),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    OutlinedButton.icon(
-                      onPressed: _refresh,
-                      icon: const Icon(Icons.sync),
-                      label: const Text('Tentar novamente'),
-                    ),
-                  ],
-                ),
-              ),
+            return _buildMessage(
+              icon: Icons.bar_chart_outlined,
+              iconColor: const Color(0xFF6C757D),
+              title:
+                  'Nenhuma estratificação configurada para este questionário.',
             );
           }
 
@@ -183,6 +172,52 @@ class _StratificationDashboardScreenState
     );
   }
 
+  /// Estado vazio/erro com o mesmo layout, mudando só ícone, cor e textos.
+  Widget _buildMessage({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    String? detail,
+  }) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 64, color: iconColor),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 16,
+                color: Color(0xFF6C757D),
+              ),
+            ),
+            if (detail != null && detail.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                detail,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: Color(0xFF6C757D),
+                ),
+              ),
+            ],
+            const SizedBox(height: 24),
+            OutlinedButton.icon(
+              onPressed: _refresh,
+              icon: const Icon(Icons.sync),
+              label: const Text('Tentar novamente'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Cards de resumo 2x2
   // ---------------------------------------------------------------------------
@@ -196,11 +231,13 @@ class _StratificationDashboardScreenState
             Expanded(
               child: _SummaryCard(
                 label: 'Progresso Geral',
-                value: '${overall.percentage.toStringAsFixed(1)}%',
+                value: _formatPercent(overall.percentage),
                 valueColor: const Color(0xFFE87722),
                 icon: Icons.trending_up,
                 showProgress: true,
-                progressValue: overall.percentage / 100,
+                // percentage pode passar de 100 quando a cota é superada
+                // (ex.: 187.5); a barra satura em 100 para não estourar.
+                progressValue: _progressFraction(overall.percentage),
               ),
             ),
             const SizedBox(width: 12),
@@ -314,7 +351,7 @@ class _StratificationDashboardScreenState
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      '${overall.percentage.toStringAsFixed(1)}%',
+                      _formatPercent(overall.percentage),
                       style: const TextStyle(
                         fontSize: 22,
                         fontWeight: FontWeight.w700,
@@ -396,8 +433,16 @@ class _StratificationDashboardScreenState
             child: BarChart(
               BarChartData(
                 alignment: BarChartAlignment.spaceAround,
-                maxY: data.categories
-                        .fold<double>(0, (m, c) => c.totalTarget > m ? c.totalTarget.toDouble() : m) *
+                // O topo considera coletado E meta: quando a cota é superada
+                // (total_current > total_target) a barra de coletado passaria
+                // do teto e sairia do gráfico.
+                maxY: data.categories.fold<double>(
+                        1,
+                        (m, c) => [
+                          m,
+                          c.totalTarget.toDouble(),
+                          c.totalCurrent.toDouble(),
+                        ].reduce((a, b) => a > b ? a : b)) *
                     1.15,
                 barTouchData: BarTouchData(
                   touchTooltipData: BarTouchTooltipData(
@@ -634,14 +679,14 @@ class _StratificationDashboardScreenState
                             child: Column(
                               children: [
                                 Text(
-                                  '${s.percentage.toStringAsFixed(0)}%',
+                                  _formatPercent(s.percentage, decimals: 0),
                                   style: const TextStyle(fontSize: 10, color: Colors.grey),
                                 ),
                                 const SizedBox(height: 3),
                                 ClipRRect(
                                   borderRadius: BorderRadius.circular(3),
                                   child: LinearProgressIndicator(
-                                    value: (s.percentage / 100).clamp(0.0, 1.0),
+                                    value: _progressFraction(s.percentage),
                                     minHeight: 6,
                                     backgroundColor: const Color(0xFFE0E0E0),
                                     valueColor: AlwaysStoppedAnimation<Color>(
@@ -673,6 +718,22 @@ class _StratificationDashboardScreenState
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+  /// Fração 0..1 para barras/gráficos. O backend manda percentage acima de
+  /// 100 quando a cota é superada (ex.: 120, 187.5) — sem saturar aqui a
+  /// barra estoura o layout.
+  static double _progressFraction(double percentage) {
+    if (percentage.isNaN || percentage.isNegative) return 0.0;
+    return (percentage / 100).clamp(0.0, 1.0);
+  }
+
+  /// Texto do percentual. Arredonda para 1 casa: o backend manda doubles com
+  /// muitas casas (109.09999999999994) e não pode vazar isso para a tela.
+  /// Não satura — o usuário precisa ver que passou de 100%.
+  static String _formatPercent(double percentage, {int decimals = 1}) {
+    if (percentage.isNaN || percentage.isInfinite) return '0%';
+    return '${percentage.toStringAsFixed(decimals)}%';
+  }
+
   static Color _progressColor(double percentage) {
     if (percentage >= 100) return const Color(0xFF198754);
     if (percentage > 50) return const Color(0xFFFFC107);

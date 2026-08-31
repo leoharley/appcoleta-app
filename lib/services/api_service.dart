@@ -1320,9 +1320,17 @@ class ApiService {
     }
   }
 
-  /// Retorna os dados de estratificação de um questionário, ou null se não
-  /// houver estratificação configurada ou em caso de erro/offline.
-  static Future<StratificationData?> getStratification(
+  /// Busca a estratificação de um questionário.
+  ///
+  /// [questionnaireId] é o ID DO QUESTIONÁRIO, nunca o stratification_id nem
+  /// um id de coleta/resposta. São valores distintos e fáceis de confundir:
+  /// a estratificação de id 20 pertence ao questionário 6, e chamar
+  /// /api/stratification/20 devolve 200 com "stratifications":[].
+  ///
+  /// Retorna a LISTA de estratificações do questionário; lista vazia quer
+  /// dizer "nenhuma configurada". Erros de rede/HTTP/parse são lançados —
+  /// quem chama precisa distinguir os dois casos na tela.
+  static Future<List<StratificationData>> getStratification(
       int questionnaireId) async {
     try {
       final url = '$baseUrl/stratification/$questionnaireId';
@@ -1344,9 +1352,13 @@ class ApiService {
           final data = responseData['data'];
           if (data == null) {
             print('📊 Resposta success=true mas data=null');
-            return null;
+            return const [];
           }
-          return StratificationData.fromJson(data as Map<String, dynamic>);
+          // O payload fica em data["stratifications"] (lista), NÃO na raiz.
+          final list = StratificationData.listFromEnvelope(
+              Map<String, dynamic>.from(data as Map));
+          print('📊 Estratificações recebidas: ${list.length}');
+          return list;
         }
         print('📊 Resposta success=${responseData['success']} - message: ${responseData['message']}');
         throw Exception('API retornou success=false: ${responseData['message']}');

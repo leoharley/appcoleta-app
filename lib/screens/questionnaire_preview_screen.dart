@@ -111,8 +111,8 @@ class _QuestionnairePreviewScreenState
                                             const SizedBox(width: 8),
                                             Expanded(
                                               child: Text(
-                                                'Estratificação indisponível: ${stratProvider.errorMessage}. '
-                                                'Conecte-se à internet uma vez para baixá-la.',
+                                                'Erro ao carregar a estratificação. '
+                                                '${stratProvider.errorMessage}',
                                                 style: const TextStyle(fontSize: 12, color: Color(0xFFBF6D16)),
                                               ),
                                             ),

@@ -1125,8 +1125,7 @@ class _QuestionScreenState extends State<QuestionScreen>
         Provider.of<StratificationProvider>(context, listen: false);
     if (!stratProvider.hasStratification) return;
 
-    final alert =
-        stratProvider.stratification!.getQuotaAlert(questionId, optionValue);
+    final alert = stratProvider.getQuotaAlert(questionId, optionValue);
     if (alert == null) return;
 
     ScaffoldMessenger.of(context).showSnackBar(

@@ -355,4 +355,212 @@ void main() {
       expect(alerta['targetQuota'], 30);
     });
   });
+
+  // ===========================================================================
+  // Envelope do endpoint GET /api/stratification/{questionnaire_id}
+  //
+  // Fixture: resposta real do questionário 6. A estratificação "teste" tem
+  // id 20 e PERTENCE ao questionário 6 — chamar /stratification/20 devolve
+  // 200 com "stratifications":[], e a tela zerava sem erro visível.
+  // ===========================================================================
+  group('listFromEnvelope (payload real do questionário 6)', () {
+    const respostaCrua = r'''
+{"success":true,"data":{"questionnaire_id":6,"applied_by_filter":null,
+"stratifications":[{"stratification_id":20,"title":"teste","is_active":true,
+"overall_progress":{"total_target":33,"total_current":36,
+"percentage":109.09999999999994},
+"my_overall_progress":null,
+"categories":[
+ {"category_id":132,"category_name":"Qual o seu sexo?",
+  "dimension_type":"question","question_id":95,
+  "total_target":25,"total_current":21,"percentage":84,
+  "my_total_current":null,"my_percentage":null,
+  "strata":[
+   {"stratum_id":456,"option_value":"masculino","option_label":"Masculino",
+    "target_quota":10,"current_count":12,"percentage":120,"quota_reached":true,
+    "my_current_count":null,"my_target_quota":null,"my_percentage":null},
+   {"stratum_id":457,"option_value":"feminino","option_label":"Feminino",
+    "target_quota":15,"current_count":9,"percentage":60,"quota_reached":false,
+    "my_current_count":null,"my_target_quota":null,"my_percentage":null}]},
+ {"category_id":133,"category_name":"Por Aplicador",
+  "dimension_type":"applicator","question_id":0,
+  "total_target":8,"total_current":15,"percentage":187.5,
+  "my_total_current":null,"my_percentage":null,
+  "strata":[
+   {"stratum_id":458,"option_value":"17","option_label":"Aplicador2 (aplicador)",
+    "target_quota":8,"current_count":15,"percentage":187.5,"quota_reached":true,
+    "my_current_count":null,"my_target_quota":null,"my_percentage":null}]}]}]}}
+''';
+
+    Map<String, dynamic> envelope() {
+      final resposta = jsonDecode(respostaCrua) as Map<String, dynamic>;
+      return Map<String, dynamic>.from(resposta['data'] as Map);
+    }
+
+    test('desce data.stratifications em vez de ler a raiz (tela zerada)', () {
+      final lista = StratificationData.listFromEnvelope(envelope());
+
+      expect(lista, hasLength(1));
+      final data = lista.first;
+
+      // Exatamente os números que apareciam zerados na tela.
+      expect(data.overallProgress.totalTarget, 33);
+      expect(data.overallProgress.totalCurrent, 36);
+      expect(data.categories, hasLength(2));
+      expect(data.title, 'teste');
+      expect(data.stratificationId, 20);
+      // questionnaire_id vem do envelope, não de dentro da estratificação.
+      expect(data.questionnaireId, 6);
+      expect(data.isActive, isTrue);
+    });
+
+    test('ler a raiz do envelope (sem descer) produz a tela zerada', () {
+      // Documenta o modo de falha silencioso: nenhuma exceção, tudo zero.
+      final errado = StratificationData.fromJson(envelope());
+
+      expect(errado.overallProgress.totalTarget, 0);
+      expect(errado.categories, isEmpty);
+    });
+
+    test('"stratifications" vazio devolve lista vazia, não erro', () {
+      final envelopeVazio = Map<String, dynamic>.from(jsonDecode(
+              '{"questionnaire_id":20,"applied_by_filter":null,"stratifications":[]}')
+          as Map);
+
+      expect(StratificationData.listFromEnvelope(envelopeVazio), isEmpty);
+    });
+
+    test('trata várias estratificações no mesmo questionário', () {
+      final varias = {
+        'questionnaire_id': 6,
+        'stratifications': [
+          {'stratification_id': 20, 'title': 'A', 'overall_progress': {}},
+          {'stratification_id': 21, 'title': 'B', 'overall_progress': {}},
+        ],
+      };
+
+      final lista = StratificationData.listFromEnvelope(varias);
+      expect(lista, hasLength(2));
+      expect(lista.map((s) => s.title), ['A', 'B']);
+      expect(lista.every((s) => s.questionnaireId == 6), isTrue);
+    });
+
+    test('aceita objeto único no lugar da lista', () {
+      final unico = {
+        'questionnaire_id': 6,
+        'stratifications': {'stratification_id': 20, 'title': 'solta'},
+      };
+
+      final lista = StratificationData.listFromEnvelope(unico);
+      expect(lista, hasLength(1));
+      expect(lista.first.title, 'solta');
+    });
+
+    test('chave "stratifications" ausente ou nula não quebra', () {
+      expect(
+          StratificationData.listFromEnvelope({'questionnaire_id': 6}), isEmpty);
+      expect(
+          StratificationData.listFromEnvelope(
+              {'questionnaire_id': 6, 'stratifications': null}),
+          isEmpty);
+    });
+
+    test('campos my_* nulos permanecem null (não viram 0)', () {
+      final data = StratificationData.listFromEnvelope(envelope()).first;
+      final categoria = data.categories.first;
+      final estrato = categoria.strata.first;
+
+      expect(data.myOverallProgress, isNull);
+      expect(categoria.myTotalCurrent, isNull);
+      expect(categoria.myPercentage, isNull);
+      expect(estrato.myCurrentCount, isNull);
+      expect(estrato.myTargetQuota, isNull);
+      expect(estrato.myPercentage, isNull);
+    });
+
+    test('campos my_* preenchidos são lidos quando applied_by é enviado', () {
+      final data = StratificationData.fromJson({
+        'stratification_id': 20,
+        'overall_progress': {'total_target': 33, 'total_current': 36},
+        'my_overall_progress': {'total_target': 10, 'total_current': 4},
+        'categories': [
+          {
+            'category_id': 1,
+            'my_total_current': 4,
+            'my_percentage': 40.0,
+            'strata': [
+              {
+                'stratum_id': 1,
+                'my_current_count': 4,
+                'my_target_quota': 10,
+                'my_percentage': 40.0,
+              }
+            ],
+          }
+        ],
+      });
+
+      expect(data.myOverallProgress!.totalCurrent, 4);
+      expect(data.categories.first.myTotalCurrent, 4);
+      expect(data.categories.first.myPercentage, 40.0);
+      expect(data.categories.first.strata.first.myTargetQuota, 10);
+    });
+
+    test('percentage acima de 100 é preservado no modelo', () {
+      final data = StratificationData.listFromEnvelope(envelope()).first;
+
+      expect(data.overallProgress.percentage, closeTo(109.1, 0.001));
+      expect(data.categories[1].percentage, 187.5);
+      expect(data.categories.first.strata.first.percentage, 120);
+    });
+
+    test('question_id 0 em dimension_type applicator não vira pergunta', () {
+      final data = StratificationData.listFromEnvelope(envelope()).first;
+      final porAplicador = data.categories[1];
+
+      expect(porAplicador.dimensionType, 'applicator');
+      expect(porAplicador.questionId, 0);
+      expect(porAplicador.hasQuestion, isFalse);
+
+      final porPergunta = data.categories.first;
+      expect(porPergunta.dimensionType, 'question');
+      expect(porPergunta.hasQuestion, isTrue);
+
+      // Buscar alerta pela "pergunta 0" não pode casar com a categoria de
+      // aplicador, mesmo com a cota atingida (15/8).
+      expect(data.getQuotaAlert(0, '17'), isNull);
+    });
+
+    test('alerta de cota funciona na categoria de pergunta real', () {
+      final data = StratificationData.listFromEnvelope(envelope()).first;
+      final alerta = data.getQuotaAlert(95, 'masculino');
+
+      expect(alerta, isNotNull);
+      expect(alerta!['optionLabel'], 'Masculino');
+      expect(alerta['currentCount'], 12);
+      expect(alerta['targetQuota'], 10);
+
+      expect(data.getQuotaAlert(95, 'feminino'), isNull);
+    });
+
+    test('round-trip pelo cache preserva o payload real', () {
+      final original = StratificationData.listFromEnvelope(envelope());
+
+      // Mesmo formato de envelope que LocalStorageService grava.
+      final cacheado = {
+        'questionnaire_id': 6,
+        'stratifications': original.map((s) => s.toJson()).toList(),
+      };
+      final restaurado = StratificationData.listFromEnvelope(
+          Map<String, dynamic>.from(jsonDecode(jsonEncode(cacheado)) as Map));
+
+      expect(restaurado, hasLength(1));
+      expect(restaurado.first.overallProgress.totalTarget, 33);
+      expect(restaurado.first.categories, hasLength(2));
+      expect(restaurado.first.categories[1].dimensionType, 'applicator');
+      expect(
+          restaurado.first.categories.first.strata.first.myPercentage, isNull);
+      expect(restaurado.first.myOverallProgress, isNull);
+    });
+  });
 }

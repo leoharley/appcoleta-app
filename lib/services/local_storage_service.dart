@@ -19,12 +19,17 @@ class LocalStorageService {
   // ---------------------------------------------------------------------------
 
   static Future<void> saveStratification(
-      int questionnaireId, StratificationData data) async {
+      int questionnaireId, List<StratificationData> data) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final payload = jsonEncode({
         'cached_at': DateTime.now().toIso8601String(),
-        'data': data.toJson(),
+        // Guardado no mesmo formato do envelope da API para voltar pelo
+        // mesmo caminho de parsing (listFromEnvelope).
+        'data': {
+          'questionnaire_id': questionnaireId,
+          'stratifications': data.map((s) => s.toJson()).toList(),
+        },
       });
       await prefs.setString(
           '$_stratificationKeyPrefix$questionnaireId', payload);
@@ -37,7 +42,7 @@ class LocalStorageService {
 
   /// Retorna a estratificação em cache e quando ela foi baixada,
   /// ou null se nunca houve download bem-sucedido para este questionário.
-  static Future<({StratificationData data, DateTime cachedAt})?>
+  static Future<({List<StratificationData> data, DateTime cachedAt})?>
       getStratification(int questionnaireId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -49,8 +54,15 @@ class LocalStorageService {
       }
 
       final map = jsonDecode(jsonString) as Map<String, dynamic>;
-      final data = StratificationData.fromJson(
-          Map<String, dynamic>.from(map['data'] as Map));
+      final rawData = Map<String, dynamic>.from(map['data'] as Map);
+
+      // Formato atual: envelope {questionnaire_id, stratifications:[...]}.
+      // Formato antigo (caches gravados antes da correção do envelope):
+      // uma única estratificação solta na raiz.
+      final List<StratificationData> data =
+          rawData.containsKey('stratifications')
+              ? StratificationData.listFromEnvelope(rawData)
+              : [StratificationData.fromJson(rawData)];
       final cachedAt =
           DateTime.tryParse(map['cached_at']?.toString() ?? '') ?? DateTime.now();
 
