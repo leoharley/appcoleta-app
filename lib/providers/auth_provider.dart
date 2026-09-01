@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../models/user.dart';
 import '../services/api_service.dart';
+import '../services/local_storage_service.dart';
 
 class AuthProvider with ChangeNotifier {
   User? _user;
@@ -496,6 +497,12 @@ class AuthProvider with ChangeNotifier {
       // MANTÉM todos os dados do usuário e credenciais offline
       // NÃO remove: user_id, user_data, user_full_name, user_username, user_email, user_role, user_is_active
       // NÃO remove: offline_username, offline_password
+
+      // MAS remove a estratificação em cache: ela agora contém as metas
+      // INDIVIDUAIS de quem estava logado. Sem isso, o próximo aplicador a
+      // usar este aparelho veria offline as metas do anterior rotuladas
+      // como "Suas metas".
+      await LocalStorageService.clearStratifications();
 
       _user = null;
       _isAuthenticated = false;

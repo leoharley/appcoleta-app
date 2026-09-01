@@ -28,6 +28,9 @@ class LocalStorageService {
         // mesmo caminho de parsing (listFromEnvelope).
         'data': {
           'questionnaire_id': questionnaireId,
+          // Preserva a visão (individual/geral) para a tela offline não
+          // trocar o rótulo das metas.
+          'view_mode': data.isEmpty ? 'geral' : data.first.viewMode,
           'stratifications': data.map((s) => s.toJson()).toList(),
         },
       });

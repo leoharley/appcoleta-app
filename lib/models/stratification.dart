@@ -66,6 +66,17 @@ class Stratum {
   final int? myTargetQuota;
   final double? myPercentage;
 
+  /// Origem da cota exibida em [targetQuota]:
+  /// "individual" = cota própria do aplicador, configurada no painel;
+  /// "geral" = não há cota individual para este estrato (ex.: dimensão
+  /// "dia da semana") e está sendo mostrada a meta geral como referência.
+  /// Ausente na visão geral, onde a distinção não se aplica.
+  final String? quotaSource;
+
+  /// True quando a cota mostrada é a geral servindo de referência, e não a
+  /// meta própria do aplicador — a tela sinaliza isso para não confundir.
+  bool get isQuotaFromGeneral => quotaSource == 'geral';
+
   const Stratum({
     required this.stratumId,
     required this.optionValue,
@@ -77,6 +88,7 @@ class Stratum {
     this.myCurrentCount,
     this.myTargetQuota,
     this.myPercentage,
+    this.quotaSource,
   });
 
   factory Stratum.fromJson(Map<String, dynamic> json) {
@@ -91,6 +103,7 @@ class Stratum {
       myCurrentCount: _parseIntOrNull(json['my_current_count']),
       myTargetQuota: _parseIntOrNull(json['my_target_quota']),
       myPercentage: _parseDoubleOrNull(json['my_percentage']),
+      quotaSource: json['quota_source']?.toString(),
     );
   }
 
@@ -107,6 +120,7 @@ class Stratum {
         'my_current_count': myCurrentCount,
         'my_target_quota': myTargetQuota,
         'my_percentage': myPercentage,
+        'quota_source': quotaSource,
       };
 
   int get remaining => targetQuota - currentCount;
@@ -218,6 +232,24 @@ class StratificationData {
   /// applied_by (é o caso hoje, o app não envia esse filtro).
   final OverallProgress? myOverallProgress;
 
+  /// Vem do envelope (data.view_mode) e é propagado para cada estratificação.
+  ///
+  /// "individual": o token é de aplicador e target_quota/current_count/
+  /// percentage JÁ SÃO os números dele — usar direto, sem somar nem comparar
+  /// com metas de outros.
+  /// "geral": visão da pesquisa inteira (supervisor/admin, ou chamada sem
+  /// token). Default "geral" para caches antigos, que não têm o campo.
+  final String viewMode;
+
+  /// True quando o app recortou os dados para um único aplicador porque o
+  /// servidor devolveu a visão geral a um perfil de aplicador.
+  /// Ver [restrictToApplicator].
+  final bool restrictedLocally;
+
+  /// True quando os números na tela são só do aplicador logado — seja porque
+  /// o servidor mandou a visão individual, seja porque o app recortou.
+  bool get isIndividualView => viewMode == 'individual' || restrictedLocally;
+
   final List<StratificationCategory> categories;
 
   const StratificationData({
@@ -227,6 +259,8 @@ class StratificationData {
     required this.isActive,
     required this.overallProgress,
     this.myOverallProgress,
+    this.viewMode = 'geral',
+    this.restrictedLocally = false,
     required this.categories,
   });
 
@@ -249,6 +283,9 @@ class StratificationData {
           ? null
           : OverallProgress.fromJson(
               Map<String, dynamic>.from(json['my_overall_progress'] as Map)),
+      viewMode: json['view_mode']?.toString() ?? 'geral',
+      // Só existe em cache gravado pelo app; o servidor nunca envia.
+      restrictedLocally: _parseBool(json['_restricted_locally']),
       categories: (json['categories'] as List? ?? [])
           .map((c) => StratificationCategory.fromJson(
               Map<String, dynamic>.from(c as Map)))
@@ -280,13 +317,17 @@ class StratificationData {
     }
 
     final questionnaireId = _parseInt(data['questionnaire_id']);
+    // view_mode também vive no envelope; sem token o servidor devolve
+    // "geral" (comportamento antigo), então esse é o default seguro.
+    final viewMode = data['view_mode']?.toString() ?? 'geral';
 
     return items
         .whereType<Map>()
         .map((s) {
           final json = Map<String, dynamic>.from(s);
-          // questionnaire_id vive no envelope, não em cada estratificação.
+          // Campos do envelope, não de cada estratificação.
           json.putIfAbsent('questionnaire_id', () => questionnaireId);
+          json.putIfAbsent('view_mode', () => viewMode);
           return StratificationData.fromJson(json);
         })
         .toList();
@@ -299,8 +340,83 @@ class StratificationData {
         'is_active': isActive,
         'overall_progress': overallProgress.toJson(),
         'my_overall_progress': myOverallProgress?.toJson(),
+        'view_mode': viewMode,
+        '_restricted_locally': restrictedLocally,
         'categories': categories.map((c) => c.toJson()).toList(),
       };
+
+  /// Recorta esta estratificação para o que um APLICADOR pode ver.
+  ///
+  /// Usado quando o perfil é aplicador mas o servidor respondeu
+  /// view_mode "geral" (metas individuais ainda não configuradas para ele,
+  /// ou backend antigo). Sem isso o aplicador enxerga o desempenho dos
+  /// colegas na dimensão "Por Aplicador".
+  ///
+  /// Regras:
+  /// - categorias de dimensão "applicator": mantém APENAS o estrato do
+  ///   próprio usuário ([applicatorId]); some se ele não tiver estrato lá;
+  /// - demais dimensões (pergunta, dia da semana): mantidas como estão, pois
+  ///   são metas da pesquisa e não expõem indivíduos;
+  /// - o progresso geral é recalculado a partir das categorias que sobraram,
+  ///   já que o total do servidor inclui os outros aplicadores.
+  ///
+  /// Em view_mode "individual" não faz nada: os números já são só dele.
+  StratificationData restrictToApplicator(int applicatorId) {
+    if (isIndividualView) return this;
+
+    final alvo = applicatorId.toString();
+    final visiveis = <StratificationCategory>[];
+
+    for (final c in categories) {
+      if (c.dimensionType != 'applicator') {
+        visiveis.add(c);
+        continue;
+      }
+
+      final meus =
+          c.strata.where((s) => s.optionValue == alvo).toList(growable: false);
+      if (meus.isEmpty) continue; // nada dele aqui: categoria inteira sai
+
+      // Os totais da categoria somam todos os aplicadores; refaz só com o dele.
+      visiveis.add(StratificationCategory(
+        categoryId: c.categoryId,
+        categoryName: c.categoryName,
+        dimensionType: c.dimensionType,
+        questionId: c.questionId,
+        totalTarget: meus.fold(0, (t, s) => t + s.targetQuota),
+        totalCurrent: meus.fold(0, (t, s) => t + s.currentCount),
+        percentage: _percent(
+          meus.fold(0, (t, s) => t + s.currentCount),
+          meus.fold(0, (t, s) => t + s.targetQuota),
+        ),
+        myTotalCurrent: c.myTotalCurrent,
+        myPercentage: c.myPercentage,
+        strata: meus,
+      ));
+    }
+
+    final target = visiveis.fold<int>(0, (t, c) => t + c.totalTarget);
+    final current = visiveis.fold<int>(0, (t, c) => t + c.totalCurrent);
+
+    return StratificationData(
+      questionnaireId: questionnaireId,
+      stratificationId: stratificationId,
+      title: title,
+      isActive: isActive,
+      overallProgress: OverallProgress(
+        totalTarget: target,
+        totalCurrent: current,
+        percentage: _percent(current, target),
+      ),
+      myOverallProgress: myOverallProgress,
+      viewMode: viewMode,
+      restrictedLocally: true,
+      categories: visiveis,
+    );
+  }
+
+  static double _percent(int current, int target) =>
+      target > 0 ? (current / target) * 100 : 0.0;
 
   /// Retorna informações de alerta se a opção selecionada tem cota atingida.
   /// Retorna null se não encontrada ou cota não atingida.

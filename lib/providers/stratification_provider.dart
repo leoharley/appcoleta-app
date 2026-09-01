@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/stratification.dart';
 import '../services/api_service.dart';
 import '../services/local_storage_service.dart';
@@ -34,7 +35,8 @@ class StratificationProvider extends ChangeNotifier {
 
   static const _cacheDuration = Duration(minutes: 5);
 
-  /// Todas as estratificações do questionário (pode haver mais de uma).
+  /// Todas as estratificações do questionário (pode haver mais de uma),
+  /// já recortadas para o que o usuário logado pode ver.
   List<StratificationData> get stratifications => _stratifications;
 
   /// A primeira estratificação, para as telas que mostram apenas uma.
@@ -93,7 +95,10 @@ class StratificationProvider extends ChangeNotifier {
 
     try {
       print('📊 Carregando estratificação do questionário $questionnaireId...');
-      final list = await ApiService.getStratification(questionnaireId);
+      final bruta = await ApiService.getStratification(questionnaireId);
+      // Recorta ANTES de exibir e de gravar: o cache não deve guardar em
+      // disco o progresso de outros aplicadores.
+      final list = await _restrictToCurrentUser(bruta);
       _stratifications = list;
       _lastQuestionnaireId = questionnaireId;
       _lastFetchTime = DateTime.now();
@@ -120,12 +125,14 @@ class StratificationProvider extends ChangeNotifier {
           await LocalStorageService.getStratification(questionnaireId);
 
       if (cached != null) {
-        _stratifications = cached.data;
+        // Recorta também na volta do cache: entradas gravadas por versões
+        // anteriores do app contêm o payload geral, com os outros aplicadores.
+        _stratifications = await _restrictToCurrentUser(cached.data);
         _cachedAt = cached.cachedAt;
         _lastQuestionnaireId = questionnaireId;
         _lastFetchTime = null; // não vale como cache de 5 min; retentar depois
         _errorMessage = null;
-        _status = cached.data.isEmpty
+        _status = _stratifications.isEmpty
             ? StratificationStatus.empty
             : StratificationStatus.loaded;
         print('✅ Estratificação exibida a partir do cache local');
@@ -141,6 +148,40 @@ class StratificationProvider extends ChangeNotifier {
     } finally {
       _isLoading = false;
       notifyListeners();
+    }
+  }
+
+  /// Recorta a lista para o que o usuário logado pode ver.
+  ///
+  /// O servidor é a autoridade: com metas por aplicador ele já devolve
+  /// view_mode "individual" e nada é filtrado aqui. Esta é a rede de
+  /// proteção para quando o perfil é aplicador mas veio "geral" — sem ela
+  /// o aplicador vê o progresso dos colegas na dimensão "Por Aplicador".
+  Future<List<StratificationData>> _restrictToCurrentUser(
+      List<StratificationData> list) async {
+    if (list.isEmpty) return list;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final role = (prefs.getString('user_role') ?? '').toLowerCase();
+      final userId = prefs.getInt('user_id');
+
+      // Supervisor/admin enxerga o geral; é o papel deles.
+      if (role != 'aplicador' || userId == null) return list;
+
+      final recortada =
+          list.map((s) => s.restrictToApplicator(userId)).toList();
+
+      if (list.any((s) => s.viewMode != 'individual')) {
+        print('🔒 view_mode "geral" para perfil aplicador: '
+            'exibindo apenas os dados do usuário $userId');
+      }
+      return recortada;
+    } catch (e) {
+      // Não dá para confirmar o perfil: melhor não arriscar vazar dados
+      // de outros aplicadores.
+      print('⚠️ Falha ao identificar o usuário para recorte: $e');
+      return const [];
     }
   }
 

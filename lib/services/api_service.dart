@@ -1330,13 +1330,22 @@ class ApiService {
   /// Retorna a LISTA de estratificações do questionário; lista vazia quer
   /// dizer "nenhuma configurada". Erros de rede/HTTP/parse são lançados —
   /// quem chama precisa distinguir os dois casos na tela.
+  ///
+  /// O token vai no header Authorization (via [_getHeaders]) e é ele que faz
+  /// o servidor decidir a visão: token de aplicador recebe SOMENTE as metas
+  /// dele (data.view_mode = "individual"); supervisor/admin recebe o geral.
+  /// Sem token vem a visão geral, o comportamento antigo.
+  ///
+  /// O app NUNCA envia ?applied_by: para um aplicador o servidor o ignora
+  /// por segurança, e o filtro é coisa das telas de supervisão no painel.
   static Future<List<StratificationData>> getStratification(
       int questionnaireId) async {
     try {
       final url = '$baseUrl/stratification/$questionnaireId';
       final headers = await _getHeaders();
       print('📊 GET $url');
-      print('📊 Headers: $headers');
+      // Não logar o valor do token; só se ele foi enviado.
+      print('📊 Authorization enviado: ${headers.containsKey('Authorization')}');
 
       final response = await http
           .get(Uri.parse(url), headers: headers)
@@ -1355,9 +1364,10 @@ class ApiService {
             return const [];
           }
           // O payload fica em data["stratifications"] (lista), NÃO na raiz.
-          final list = StratificationData.listFromEnvelope(
-              Map<String, dynamic>.from(data as Map));
-          print('📊 Estratificações recebidas: ${list.length}');
+          final envelope = Map<String, dynamic>.from(data as Map);
+          final list = StratificationData.listFromEnvelope(envelope);
+          print('📊 Estratificações recebidas: ${list.length} '
+              '(view_mode: ${envelope['view_mode'] ?? 'geral'})');
           return list;
         }
         print('📊 Resposta success=${responseData['success']} - message: ${responseData['message']}');

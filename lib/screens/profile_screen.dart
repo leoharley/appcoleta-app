@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/stratification_provider.dart';
 import 'login_screen.dart';
 import 'stats_screen.dart';
 import 'stats_graphs_screen.dart';
@@ -285,8 +286,12 @@ class ProfileScreen extends StatelessWidget {
           TextButton(
             onPressed: () async {
               final authProvider = Provider.of<AuthProvider>(context, listen: false);
+              // Descarta a estratificação em memória: com metas por
+              // aplicador, ela é do usuário que está saindo.
+              Provider.of<StratificationProvider>(context, listen: false)
+                  .clear();
               await authProvider.logout();
-              
+
               Navigator.pushAndRemoveUntil(
                 context,
                 MaterialPageRoute(builder: (context) => const LoginScreen()),

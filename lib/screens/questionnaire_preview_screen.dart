@@ -811,9 +811,11 @@ class _StratificationCard extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
-                'Progresso Geral',
-                style: TextStyle(fontSize: 12, color: Colors.grey),
+              // Com metas por aplicador o rótulo não pode dizer "Geral":
+              // os números são os dele.
+              Text(
+                data.isIndividualView ? 'Seu Progresso' : 'Progresso Geral',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
               Text(
                 '${overall.totalCurrent}/${overall.totalTarget} (${overall.percentage.toStringAsFixed(1)}%)',

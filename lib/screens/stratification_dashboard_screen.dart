@@ -143,13 +143,31 @@ class _StratificationDashboardScreenState
     return Row(
       children: [
         Expanded(
-          child: Text(
-            data.title,
-            style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-              color: Color(0xFF23345F),
-            ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                data.title,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF23345F),
+                ),
+              ),
+              const SizedBox(height: 2),
+              // Deixa explícito de quem são os números na tela: as metas do
+              // próprio aplicador ou as da pesquisa inteira.
+              Text(
+                data.isIndividualView ? 'Suas metas' : 'Metas da pesquisa',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: data.isIndividualView
+                      ? const Color(0xFFE87722)
+                      : const Color(0xFF6C757D),
+                ),
+              ),
+            ],
           ),
         ),
         if (!data.isActive)
@@ -655,9 +673,21 @@ class _StratificationDashboardScreenState
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  s.optionLabel,
-                                  style: const TextStyle(fontSize: 12, color: Color(0xFF23345F)),
+                                Row(
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        s.optionLabel,
+                                        style: const TextStyle(
+                                            fontSize: 12,
+                                            color: Color(0xFF23345F)),
+                                      ),
+                                    ),
+                                    if (s.isQuotaFromGeneral) ...[
+                                      const SizedBox(width: 4),
+                                      const _GeneralQuotaBadge(),
+                                    ],
+                                  ],
                                 ),
                                 Text(
                                   'Faltam: $remaining',
@@ -995,17 +1025,28 @@ class _StratumTile extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Flexible(
-                      child: Text(
-                        stratum.optionLabel,
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: stratum.quotaReached
-                              ? const Color(0xFF198754)
-                              : const Color(0xFF23345F),
-                          fontWeight: stratum.quotaReached
-                              ? FontWeight.w600
-                              : FontWeight.normal,
-                        ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              stratum.optionLabel,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: stratum.quotaReached
+                                    ? const Color(0xFF198754)
+                                    : const Color(0xFF23345F),
+                                fontWeight: stratum.quotaReached
+                                    ? FontWeight.w600
+                                    : FontWeight.normal,
+                              ),
+                            ),
+                          ),
+                          if (stratum.isQuotaFromGeneral) ...[
+                            const SizedBox(width: 4),
+                            const _GeneralQuotaBadge(),
+                          ],
+                        ],
                       ),
                     ),
                     Text(
@@ -1051,6 +1092,43 @@ class _StratumTile extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// Selo de cota vinda da visão geral
+// =============================================================================
+/// Marca um estrato cuja cota exibida NÃO é a meta individual do aplicador.
+///
+/// Acontece quando não há cota individual configurada para aquele estrato
+/// (ex.: dimensão "dia da semana"): o servidor manda quota_source "geral" e
+/// a meta da pesquisa aparece só como referência. Sem esse aviso o aplicador
+/// leria o número como se fosse a meta dele.
+class _GeneralQuotaBadge extends StatelessWidget {
+  const _GeneralQuotaBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Sem cota individual para este item. '
+          'Exibindo a meta geral da pesquisa como referência.',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+        decoration: BoxDecoration(
+          color: const Color(0xFF6C757D).withOpacity(0.12),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFF6C757D).withOpacity(0.3)),
+        ),
+        child: const Text(
+          'meta geral',
+          style: TextStyle(
+            fontSize: 9,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF6C757D),
+          ),
+        ),
       ),
     );
   }

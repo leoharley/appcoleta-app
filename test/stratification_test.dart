@@ -563,4 +563,418 @@ void main() {
       expect(restaurado.first.myOverallProgress, isNull);
     });
   });
+
+  // ===========================================================================
+  // Metas por aplicador: view_mode e quota_source
+  //
+  // O token no header decide a visão. Com token de aplicador o servidor
+  // devolve view_mode "individual" e target_quota/current_count/percentage
+  // JÁ SÃO os números dele — nada de somar ou comparar com outros.
+  // ===========================================================================
+  group('view_mode (visão individual x geral)', () {
+    Map<String, dynamic> envelopeIndividual() => {
+          'questionnaire_id': 6,
+          'applied_by_filter': null,
+          'view_mode': 'individual',
+          'stratifications': [
+            {
+              'stratification_id': 20,
+              'title': 'teste',
+              'is_active': true,
+              'overall_progress': {
+                'total_target': 12,
+                'total_current': 5,
+                'percentage': 41.666666666666664,
+              },
+              'my_overall_progress': null,
+              'categories': [
+                {
+                  'category_id': 132,
+                  'category_name': 'Qual o seu sexo?',
+                  'dimension_type': 'question',
+                  'question_id': 95,
+                  'total_target': 8,
+                  'total_current': 5,
+                  'percentage': 62.5,
+                  'strata': [
+                    {
+                      'stratum_id': 456,
+                      'option_value': 'masculino',
+                      'option_label': 'Masculino',
+                      'target_quota': 5,
+                      'current_count': 5,
+                      'percentage': 100,
+                      'quota_reached': true,
+                      'quota_source': 'individual',
+                    },
+                    {
+                      'stratum_id': 457,
+                      'option_value': 'feminino',
+                      'option_label': 'Feminino',
+                      'target_quota': 3,
+                      'current_count': 0,
+                      'percentage': 0,
+                      'quota_reached': false,
+                      'quota_source': 'individual',
+                    },
+                  ],
+                },
+                {
+                  'category_id': 134,
+                  'category_name': 'Dia da semana',
+                  'dimension_type': 'weekday',
+                  'question_id': 0,
+                  'total_target': 4,
+                  'total_current': 0,
+                  'percentage': 0,
+                  'strata': [
+                    {
+                      'stratum_id': 460,
+                      'option_value': 'seg',
+                      'option_label': 'Segunda',
+                      'target_quota': 4,
+                      'current_count': 0,
+                      'percentage': 0,
+                      'quota_reached': false,
+                      // Sem cota individual: mostra a meta geral só como
+                      // referência.
+                      'quota_source': 'geral',
+                    },
+                  ],
+                },
+              ],
+            }
+          ],
+        };
+
+    test('view_mode do envelope chega em cada estratificação', () {
+      final lista = StratificationData.listFromEnvelope(envelopeIndividual());
+
+      expect(lista, hasLength(1));
+      expect(lista.first.viewMode, 'individual');
+      expect(lista.first.isIndividualView, isTrue);
+    });
+
+    test('sem view_mode no envelope o default é "geral"', () {
+      final lista = StratificationData.listFromEnvelope({
+        'questionnaire_id': 6,
+        'stratifications': [
+          {'stratification_id': 20, 'title': 'x', 'overall_progress': {}}
+        ],
+      });
+
+      expect(lista.first.viewMode, 'geral');
+      expect(lista.first.isIndividualView, isFalse);
+    });
+
+    test('view_mode "geral" do payload real do servidor', () {
+      final lista = StratificationData.listFromEnvelope({
+        'questionnaire_id': 6,
+        'applied_by_filter': null,
+        'view_mode': 'geral',
+        'stratifications': [
+          {'stratification_id': 20, 'title': 'teste', 'overall_progress': {}}
+        ],
+      });
+
+      expect(lista.first.isIndividualView, isFalse);
+    });
+
+    test('em individual os números são usados direto, sem my_*', () {
+      final data = StratificationData.listFromEnvelope(envelopeIndividual())
+          .first;
+
+      // my_overall_progress vem null e NÃO deve ser necessário: os campos
+      // principais já são os do aplicador logado.
+      expect(data.myOverallProgress, isNull);
+      expect(data.overallProgress.totalTarget, 12);
+      expect(data.overallProgress.totalCurrent, 5);
+
+      final masculino = data.categories.first.strata.first;
+      expect(masculino.targetQuota, 5);
+      expect(masculino.currentCount, 5);
+      expect(masculino.quotaReached, isTrue);
+    });
+
+    test('quota_source distingue cota individual de meta geral', () {
+      final data = StratificationData.listFromEnvelope(envelopeIndividual())
+          .first;
+
+      final porPergunta = data.categories.first.strata.first;
+      expect(porPergunta.quotaSource, 'individual');
+      expect(porPergunta.isQuotaFromGeneral, isFalse);
+
+      final diaDaSemana = data.categories[1].strata.first;
+      expect(diaDaSemana.quotaSource, 'geral');
+      expect(diaDaSemana.isQuotaFromGeneral, isTrue);
+    });
+
+    test('quota_source ausente (visão geral) não marca nada', () {
+      final estrato = Stratum.fromJson({
+        'stratum_id': 456,
+        'option_value': 'masculino',
+        'target_quota': 10,
+        'current_count': 12,
+      });
+
+      expect(estrato.quotaSource, isNull);
+      expect(estrato.isQuotaFromGeneral, isFalse);
+    });
+
+    test('weekday tem question_id 0 e não vira busca de pergunta', () {
+      final data = StratificationData.listFromEnvelope(envelopeIndividual())
+          .first;
+      final diaDaSemana = data.categories[1];
+
+      expect(diaDaSemana.dimensionType, 'weekday');
+      expect(diaDaSemana.questionId, 0);
+      expect(diaDaSemana.hasQuestion, isFalse);
+      expect(data.getQuotaAlert(0, 'seg'), isNull);
+    });
+
+    test('round-trip do cache preserva view_mode e quota_source', () {
+      final original =
+          StratificationData.listFromEnvelope(envelopeIndividual());
+
+      // Mesmo envelope que LocalStorageService grava, incluindo view_mode.
+      final cacheado = {
+        'questionnaire_id': 6,
+        'view_mode': original.first.viewMode,
+        'stratifications': original.map((s) => s.toJson()).toList(),
+      };
+      final restaurado = StratificationData.listFromEnvelope(
+          Map<String, dynamic>.from(jsonDecode(jsonEncode(cacheado)) as Map));
+
+      expect(restaurado.first.viewMode, 'individual');
+      expect(restaurado.first.isIndividualView, isTrue);
+      expect(restaurado.first.categories.first.strata.first.quotaSource,
+          'individual');
+      expect(restaurado.first.categories[1].strata.first.isQuotaFromGeneral,
+          isTrue);
+    });
+
+    test('percentage acima de 100 continua valendo na visão individual', () {
+      final estrato = Stratum.fromJson({
+        'stratum_id': 1,
+        'target_quota': 4,
+        'current_count': 9,
+        'percentage': 225.0,
+        'quota_reached': true,
+        'quota_source': 'individual',
+      });
+
+      expect(estrato.percentage, 225.0);
+      expect(estrato.quotaReached, isTrue);
+    });
+  });
+
+  // ===========================================================================
+  // Recorte por aplicador
+  //
+  // Rede de proteção para quando o perfil é aplicador mas o servidor devolve
+  // view_mode "geral": sem isso o aplicador vê o progresso dos colegas na
+  // dimensão "Por Aplicador". Baseado no payload real do questionário 6.
+  // ===========================================================================
+  group('restrictToApplicator', () {
+    // Mesma forma do print reportado: categoria de pergunta + categoria
+    // "Por Aplicador" com mais de um aplicador.
+    StratificationData geralComDoisAplicadores() {
+      return StratificationData.listFromEnvelope({
+        'questionnaire_id': 6,
+        'view_mode': 'geral',
+        'stratifications': [
+          {
+            'stratification_id': 20,
+            'title': 'teste',
+            'is_active': true,
+            'overall_progress': {
+              'total_target': 33,
+              'total_current': 30,
+              'percentage': 90.9,
+            },
+            'categories': [
+              {
+                'category_id': 132,
+                'category_name': 'Qual o seu sexo?',
+                'dimension_type': 'question',
+                'question_id': 95,
+                'total_target': 25,
+                'total_current': 15,
+                'percentage': 60,
+                'strata': [
+                  {
+                    'stratum_id': 456,
+                    'option_value': 'masculino',
+                    'option_label': 'Masculino',
+                    'target_quota': 10,
+                    'current_count': 10,
+                    'percentage': 100,
+                    'quota_reached': true,
+                  },
+                  {
+                    'stratum_id': 457,
+                    'option_value': 'feminino',
+                    'option_label': 'Feminino',
+                    'target_quota': 15,
+                    'current_count': 5,
+                    'percentage': 33.3,
+                    'quota_reached': false,
+                  },
+                ],
+              },
+              {
+                'category_id': 133,
+                'category_name': 'Por Aplicador',
+                'dimension_type': 'applicator',
+                'question_id': 0,
+                'total_target': 8,
+                'total_current': 15,
+                'percentage': 187.5,
+                'strata': [
+                  {
+                    'stratum_id': 458,
+                    'option_value': '17',
+                    'option_label': 'Aplicador2 (aplicador)',
+                    'target_quota': 8,
+                    'current_count': 8,
+                    'percentage': 100,
+                    'quota_reached': true,
+                  },
+                  {
+                    'stratum_id': 459,
+                    'option_value': '18',
+                    'option_label': 'Aplicador3 (aplicador)',
+                    'target_quota': 6,
+                    'current_count': 7,
+                    'percentage': 116.7,
+                    'quota_reached': true,
+                  },
+                ],
+              },
+            ],
+          }
+        ],
+      }).first;
+    }
+
+    test('mantém apenas o estrato do próprio aplicador', () {
+      final recortada = geralComDoisAplicadores().restrictToApplicator(17);
+      final porAplicador = recortada.categories
+          .firstWhere((c) => c.dimensionType == 'applicator');
+
+      expect(porAplicador.strata, hasLength(1));
+      expect(porAplicador.strata.first.optionValue, '17');
+      // O colega não pode aparecer de forma alguma.
+      expect(
+        recortada.categories
+            .expand((c) => c.strata)
+            .map((s) => s.optionLabel)
+            .join(' '),
+        isNot(contains('Aplicador3')),
+      );
+    });
+
+    test('recalcula o total da categoria sem os outros aplicadores', () {
+      final recortada = geralComDoisAplicadores().restrictToApplicator(17);
+      final porAplicador = recortada.categories
+          .firstWhere((c) => c.dimensionType == 'applicator');
+
+      // Antes: 15/8 somando os dois. Agora: só o 8/8 dele.
+      expect(porAplicador.totalCurrent, 8);
+      expect(porAplicador.totalTarget, 8);
+      expect(porAplicador.percentage, 100);
+    });
+
+    test('recalcula o progresso geral a partir do que sobrou', () {
+      final recortada = geralComDoisAplicadores().restrictToApplicator(17);
+
+      // 25 (pergunta) + 8 (dele) = 33 de meta; 15 + 8 = 23 coletados.
+      expect(recortada.overallProgress.totalTarget, 33);
+      expect(recortada.overallProgress.totalCurrent, 23);
+      expect(recortada.overallProgress.percentage, closeTo(69.7, 0.1));
+    });
+
+    test('categorias de pergunta são preservadas', () {
+      final recortada = geralComDoisAplicadores().restrictToApplicator(17);
+      final pergunta =
+          recortada.categories.firstWhere((c) => c.dimensionType == 'question');
+
+      expect(pergunta.strata, hasLength(2));
+      expect(pergunta.totalTarget, 25);
+    });
+
+    test('aplicador sem estrato na categoria: categoria inteira sai', () {
+      final recortada = geralComDoisAplicadores().restrictToApplicator(99);
+
+      expect(recortada.categories.any((c) => c.dimensionType == 'applicator'),
+          isFalse);
+      // Sobra só a categoria de pergunta.
+      expect(recortada.categories, hasLength(1));
+      expect(recortada.overallProgress.totalTarget, 25);
+    });
+
+    test('marca restrictedLocally para a tela rotular como individual', () {
+      final original = geralComDoisAplicadores();
+      expect(original.isIndividualView, isFalse);
+
+      final recortada = original.restrictToApplicator(17);
+      expect(recortada.restrictedLocally, isTrue);
+      expect(recortada.isIndividualView, isTrue);
+    });
+
+    test('em view_mode individual não altera nada', () {
+      final individual = StratificationData.listFromEnvelope({
+        'questionnaire_id': 6,
+        'view_mode': 'individual',
+        'stratifications': [
+          {
+            'stratification_id': 20,
+            'overall_progress': {'total_target': 8, 'total_current': 5},
+            'categories': [
+              {
+                'category_id': 133,
+                'dimension_type': 'applicator',
+                'question_id': 0,
+                'total_target': 8,
+                'total_current': 5,
+                'strata': [
+                  {
+                    'stratum_id': 458,
+                    'option_value': '17',
+                    'target_quota': 8,
+                    'current_count': 5,
+                  }
+                ],
+              }
+            ],
+          }
+        ],
+      }).first;
+
+      final resultado = individual.restrictToApplicator(17);
+
+      expect(identical(resultado, individual), isTrue);
+      expect(resultado.overallProgress.totalCurrent, 5);
+    });
+
+    test('round-trip do cache preserva o recorte', () {
+      final recortada = geralComDoisAplicadores().restrictToApplicator(17);
+
+      final cacheado = {
+        'questionnaire_id': 6,
+        'view_mode': recortada.viewMode,
+        'stratifications': [recortada.toJson()],
+      };
+      final restaurada = StratificationData.listFromEnvelope(
+              Map<String, dynamic>.from(jsonDecode(jsonEncode(cacheado)) as Map))
+          .first;
+
+      expect(restaurada.restrictedLocally, isTrue);
+      expect(restaurada.isIndividualView, isTrue);
+      final porAplicador = restaurada.categories
+          .firstWhere((c) => c.dimensionType == 'applicator');
+      expect(porAplicador.strata, hasLength(1));
+      expect(porAplicador.strata.first.optionValue, '17');
+    });
+  });
 }
