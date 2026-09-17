@@ -120,13 +120,14 @@ class ApiService {
             headers: await _getHeaders(),
             body: jsonEncode(formJson),
           )
-          // Sem timeout, uma conexão ruim de campo deixava a sincronização
-          // pendurada sem fim, com o botão travado em "sincronizando".
-          .timeout(const Duration(seconds: 45));
+          // 60s: em 3G/4G ruim de campo, desistir cedo faz o app perder a
+          // resposta de um envio que o servidor ESTÁ gravando. O id vem só
+          // após o commit, então abortar antes disso custa a confirmação.
+          .timeout(const Duration(seconds: 60));
     } on TimeoutException {
       throw Exception(
-        'O servidor não respondeu em 45 segundos. Tente novamente com um '
-        'sinal melhor.',
+        'O servidor não respondeu em 60 segundos. A resposta continua '
+        'salva no aparelho — tente novamente com um sinal melhor.',
       );
     } catch (e) {
       throw Exception('Sem conexão com o servidor: $e');
@@ -148,14 +149,34 @@ class ApiService {
       return responseData;
     }
 
-    // O status HTTP vai SEMPRE na mensagem. É por ele que a interface
-    // reconhece sessão expirada (401) — depender do texto "Invalid token"
-    // quebraria no dia em que o backend traduzisse a mensagem.
+    // Erros PERMANENTES: reenviar o mesmo corpo daria o mesmo resultado.
+    // Sinalizados para a fila não entrar em loop.
     if (responseData != null) {
-      throw Exception(
-        'HTTP ${response.statusCode}: '
-        '${responseData['message'] ?? 'o servidor recusou o envio'}',
-      );
+      final msg = responseData['message']?.toString() ??
+          'o servidor recusou o envio';
+
+      // 413: payload acima do post_max_size.
+      if (response.statusCode == 413 ||
+          responseData['limit_exceeded'] == true) {
+        throw PermanentSubmitException(
+          'A resposta é grande demais para o servidor aceitar. '
+          'Avise o suporte — reenviar não resolve. ($msg)',
+          statusCode: response.statusCode,
+        );
+      }
+
+      // 400: JSON malformado gerado pelo app.
+      if (response.statusCode == 400 || responseData['json_error'] != null) {
+        throw PermanentSubmitException(
+          'O servidor não conseguiu ler esta resposta '
+          '(${responseData['json_error'] ?? msg}). Avise o suporte.',
+          statusCode: response.statusCode,
+        );
+      }
+
+      // 500 com fatal: a transação foi revertida, nada gravou. É seguro
+      // reenviar, então segue como erro comum (temporário).
+      throw Exception('HTTP ${response.statusCode}: $msg');
     }
 
     final trecho = response.body.trim().replaceAll(RegExp(r'\s+'), ' ');
@@ -1384,6 +1405,22 @@ class ApiService {
       rethrow;
     }
   }
+}
+
+/// Falha em que reenviar o MESMO corpo não vai adiantar (413 por tamanho,
+/// 400 por JSON inválido).
+///
+/// A coleta continua salva no aparelho — nada é descartado —, mas a fila
+/// para de tentar em loop e avisa o aplicador, em vez de repetir a cada
+/// sincronização.
+class PermanentSubmitException implements Exception {
+  final String message;
+  final int? statusCode;
+
+  PermanentSubmitException(this.message, {this.statusCode});
+
+  @override
+  String toString() => message;
 }
 
 /// NOVA: Classe para exceções personalizadas da API

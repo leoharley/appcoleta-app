@@ -7,16 +7,23 @@ class QuestionnaireProvider with ChangeNotifier {
   List<Questionnaire> _questionnaires = [];
   bool _isLoading = false;
   String? _error;
+  bool _isFromCache = false;
 
   List<Questionnaire> get questionnaires => _questionnaires;
   bool get isLoading => _isLoading;
   String? get error => _error;
+
+  /// True quando a lista exibida veio do cache local porque o servidor não
+  /// respondeu. Nesse estado a lista pode conter questionários já
+  /// desativados no painel — a tela deve avisar que está desatualizada.
+  bool get isFromCache => _isFromCache;
 
   Future<void> loadQuestionnaires() async {
     print('🔄 Starting to load questionnaires...');
     
     _isLoading = true;
     _error = null;
+    _isFromCache = false;
     notifyListeners();
 
     try {
@@ -50,13 +57,17 @@ class QuestionnaireProvider with ChangeNotifier {
       
       if (serverData['success'] == true) {
         print('✅ Server request successful');
-        
-        final dataList = serverData['data'] as List?;
-        if (dataList != null && dataList.isNotEmpty) {
+
+        // Lista vazia é uma RESPOSTA VÁLIDA, não um erro: significa que o
+        // usuário não tem nenhum questionário ativo disponível. Tratá-la
+        // como falha fazia o app cair no cache e ressuscitar questionários
+        // já desativados no painel (com o status "active" antigo gravado).
+        final dataList = (serverData['data'] as List?) ?? const [];
+        {
           print('🔄 Converting ${dataList.length} questionnaires...');
-          
+
           _questionnaires = [];
-          
+
           for (int i = 0; i < dataList.length; i++) {
             try {
               final rawData = dataList[i] as Map<String, dynamic>;
@@ -90,16 +101,18 @@ class QuestionnaireProvider with ChangeNotifier {
             print('   $i: ${_questionnaires[i].title} (${_questionnaires[i].questions.length} questions)');
           }
           
-          // Save to local storage
+          // RECONCILIAÇÃO: grava exatamente a lista que o servidor mandou,
+          // substituindo o cache inteiro. Questionários que não vieram
+          // (desativados no painel ou com acesso revogado) somem daqui.
+          // Só acontece em resposta bem-sucedida — falha de rede cai no
+          // catch e preserva o cache.
           try {
             await LocalStorageService.saveQuestionnaires(_questionnaires);
-            print('💾 Questionnaires saved to local storage');
+            print('💾 Cache reconciliado com o servidor: '
+                '${_questionnaires.length} questionário(s) disponíveis');
           } catch (storageError) {
             print('⚠️ Failed to save to local storage: $storageError');
           }
-        } else {
-          print('⚠️ Server data is null or empty');
-          throw Exception('Server returned null or empty data');
         }
       } else {
         print('❌ Server request failed: ${serverData['message'] ?? 'Unknown error'}');
@@ -110,11 +123,16 @@ class QuestionnaireProvider with ChangeNotifier {
       print('📋 Stack trace: $stackTrace');
       print('🔄 Attempting to load from local storage...');
       
-      // Fallback to local storage
+      // Fallback ao cache: NUNCA apagar aqui. A chamada falhou, então não
+      // sabemos o que mudou no painel — apagar deixaria o coletor sem
+      // nenhum questionário em campo. O cache fica como está até uma
+      // resposta bem-sucedida reconciliar.
       try {
         _questionnaires = await LocalStorageService.getQuestionnaires();
-        print('💾 Loaded ${_questionnaires.length} questionnaires from local storage');
-        
+        _isFromCache = _questionnaires.isNotEmpty;
+        print('💾 Exibindo ${_questionnaires.length} questionário(s) do cache '
+            '(offline; podem estar desatualizados)');
+
         if (_questionnaires.isEmpty) {
           _error = 'Não foi possível carregar os questionários';
           print('⚠️ No questionnaires found in local storage either');

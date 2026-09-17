@@ -5,10 +5,14 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     
-    <!-- Localização -->
+    <!-- Localização (apenas em primeiro plano).
+         NÃO declarar ACCESS_BACKGROUND_LOCATION: o GPS só roda com o
+         questionário aberto (LocationService.iniciarAquecimento/
+         pararAquecimento). Declará-la faria o sistema pedir ao aplicador
+         "permitir o tempo todo" sem necessidade, além de ser a permissão
+         mais escrutinada em revisões de segurança. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     
     <!-- Câmera e Armazenamento -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -16,9 +20,14 @@
     <!-- Microfone para gravação de áudio -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Permissões de armazenamento - ESSENCIAIS para salvar fotos offline -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <!-- Permissões de armazenamento - ESSENCIAIS para salvar fotos offline.
+         A partir do Android 13 (API 33) elas foram substituídas pelas
+         permissões granulares de mídia abaixo; limitadas ao API 32 para
+         não pedir permissão que o sistema novo ignora. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
     
     <!-- Para Android 13+ (API 33+) - Permissões granulares de mídia -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
@@ -36,8 +45,6 @@
     <application
         android:label="AppColeta"
         android:name="${applicationName}"
-        android:usesCleartextTraffic="true"
-        android:requestLegacyExternalStorage="true"
         android:icon="@mipmap/launcher_icon">
         <activity
             android:name=".MainActivity"

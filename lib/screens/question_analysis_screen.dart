@@ -14,7 +14,6 @@ import 'package:pdf/widgets.dart' as pw;
 import 'dart:math' as math;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
@@ -1532,13 +1531,15 @@ String _escapeCsvField(String field) {
 
 // 9. Adicione este método para solicitar permissões (adicione no initState):
 
+/// Não pede permissão de armazenamento: a exportação grava em
+/// getApplicationDocumentsDirectory() (área interna do app, que nunca exigiu
+/// permissão) e entrega o arquivo por Share.shareXFiles.
+///
+/// O pedido anterior incluía MANAGE_EXTERNAL_STORAGE ("acesso a todos os
+/// arquivos"), que o Google restringe e que contribui para alertas do Play
+/// Protect — sem que o app precisasse dele.
 Future<void> _requestPermissions() async {
-  if (Platform.isAndroid) {
-    await [
-      Permission.storage,
-      Permission.manageExternalStorage,
-    ].request();
-  }
+  // Intencionalmente vazio.
 }
 
   @override

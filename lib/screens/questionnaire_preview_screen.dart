@@ -443,7 +443,8 @@ class _QuestionnairePreviewScreenState
   /// atualização) e deixa ele decidir se continua.
   ///
   /// Retorna o questionário a aplicar (atualizado quando online), ou null se
-  /// o aplicador cancelar.
+  /// o aplicador cancelar ou se o questionário não estiver mais disponível
+  /// no painel (desativado / acesso revogado).
   Future<Questionnaire?> _refreshQuestionnaireBeforeStart() async {
     bool online = false;
     try {
@@ -478,8 +479,37 @@ class _QuestionnairePreviewScreenState
           print('✅ Questionário atualizado do painel antes da aplicação');
           return updated;
         }
-        // Não veio na lista (ex.: desativado no painel) — usar a versão local.
-        return widget.questionnaire;
+        // O servidor respondeu, mas este questionário NÃO veio na lista:
+        // foi desativado no painel ou o acesso do usuário foi revogado.
+        // Não abrir nova coleta em silêncio.
+        print('🚫 Questionário ${widget.questionnaire.id} não está mais '
+            'disponível na listagem do servidor');
+        if (!mounted) return null;
+        await showDialog<void>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.block, color: Color(0xFFDC3545)),
+                SizedBox(width: 8),
+                Expanded(child: Text('Questionário indisponível')),
+              ],
+            ),
+            content: const Text(
+              'Este questionário foi desativado no painel administrativo e '
+              'não aceita novas coletas.\n\n'
+              'As coletas que você já concluiu continuam salvas e serão '
+              'enviadas normalmente na próxima sincronização.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Entendi'),
+              ),
+            ],
+          ),
+        );
+        return null;
       } catch (e) {
         print('❌ Falha ao atualizar questionário do painel: $e');
         if (mounted) {

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import '../models/form_response.dart';
 import '../models/question_response.dart';
 import '../models/question.dart';
@@ -108,8 +109,13 @@ class FormProvider with ChangeNotifier {
           questionnaireId: questionnaireId,
           appliedBy: userId,
           consentGiven: false,
+          // Gerado UMA vez, aqui, no nascimento da coleta — não no envio.
+          // Persistido junto com ela, então todo reenvio manda o mesmo
+          // valor e o backend deduplica em vez de duplicar.
+          clientId: const Uuid().v4(),
           startedAt: DateTime.now(),
         );
+        print('📝 client_id gerado: ${_currentForm!.clientId}');
         print('📝 Novo formulário criado com ID: ${_currentForm!.id}');
         _responses.clear();
       }
@@ -1249,36 +1255,41 @@ class FormProvider with ChangeNotifier {
   }
 
   /// Verifica se há formulários pendentes de sincronização
+  /// Coletas ainda NÃO confirmadas pelo painel — é o que a tela principal
+  /// mostra e o que a sincronização reenvia.
+  ///
+  /// Lê só as pendentes: as já enviadas continuam salvas no aparelho, mas
+  /// não são carregadas aqui (ver [getSyncedForms] e a tela "Enviadas").
   Future<List<FormResponse>> getPendingForms() async {
     try {
-      print('📋 === BUSCANDO FORMULÁRIOS PENDENTES ===');
-      final allForms = await LocalStorageService.getFormResponses();
-      print('📋 Total de formulários no storage: ${allForms.length}');
-
-      // Debug: mostrar status de cada formulário
-      for (int i = 0; i < allForms.length; i++) {
-        final form = allForms[i];
-        print('📋 Formulário $i: ID=${form.id}, Status="${form.syncStatus}", Questionário=${form.questionnaireId}');
-      }
-
-      final pendingForms = allForms.where((form) => form.syncStatus == 'pending').toList();
-      print('📋 Formulários com status "pending": ${pendingForms.length}');
-
-      if (pendingForms.isEmpty && allForms.isNotEmpty) {
-        print('⚠️ ATENÇÃO: Há formulários no storage mas nenhum com status "pending"!');
-        print('⚠️ Status encontrados:');
-        for (final form in allForms) {
-          print('   - Formulário ${form.id}: "${form.syncStatus}"');
-        }
-      }
-
-      return pendingForms;
+      // 'error' e 'offline' também aguardam envio — não podem sumir da
+      // tela nem ficar de fora do reenvio.
+      return [
+        ...await LocalStorageService.getFormResponsesByStatus('pending'),
+        ...await LocalStorageService.getFormResponsesByStatus('offline'),
+        ...await LocalStorageService.getFormResponsesByStatus('error'),
+      ];
     } catch (e, stackTrace) {
       print('❌ Erro ao buscar formulários pendentes: $e');
       print('📋 Stack trace: $stackTrace');
       return [];
     }
   }
+
+  /// Coletas já confirmadas pelo painel. Carregadas sob demanda, apenas
+  /// quando o usuário abre a tela de enviadas.
+  Future<List<FormResponse>> getSyncedForms() async {
+    try {
+      return await LocalStorageService.getFormResponsesByStatus('synced');
+    } catch (e) {
+      print('❌ Erro ao buscar formulários enviados: $e');
+      return [];
+    }
+  }
+
+  /// Resumo por status, sem instanciar as coletas.
+  Future<Map<String, int>> getFormCounts() =>
+      LocalStorageService.getFormCountsByStatus();
 
   /// Sincroniza apenas fotos pendentes
   Future<int> syncPendingPhotosOnly() async {
@@ -1464,6 +1475,70 @@ class FormProvider with ChangeNotifier {
   String? _lastSyncError;
   String? get lastSyncError => _lastSyncError;
 
+  /// Reenvia UMA coleta específica, mesmo já confirmada.
+  ///
+  /// Seguro por causa do client_id: o backend reconhece a coleta pela chave
+  /// de idempotência e devolve o registro existente em vez de duplicar.
+  /// Serve para quando há dúvida se a coleta chegou ao painel — inclusive
+  /// para as que versões antigas marcaram como enviadas sem confirmação.
+  Future<({bool success, String message})> resendForm(FormResponse form) async {
+    try {
+      var paraEnviar = form;
+
+      // Coleta antiga sem client_id: atribui e PERSISTE antes de enviar,
+      // senão cada reenvio viraria um registro novo no painel.
+      if (paraEnviar.clientId == null && paraEnviar.id != null) {
+        paraEnviar = paraEnviar.copyWith(clientId: const Uuid().v4());
+        await LocalStorageService.updateFormResponse(paraEnviar);
+        print('🔑 client_id atribuído no reenvio: ${paraEnviar.clientId}');
+      }
+
+      print('🔄 Reenviando coleta ${paraEnviar.id}...');
+      final result = await ApiService.submitForm(paraEnviar);
+
+      if (result['success'] != true) {
+        return (
+          success: false,
+          message: result['message']?.toString() ??
+              'O servidor recusou o reenvio.',
+        );
+      }
+
+      final serverId = FormResponse.extractServerId(result);
+      if (serverId == null) {
+        return (
+          success: false,
+          message: 'O servidor respondeu sem confirmar o registro. '
+              'A coleta continua salva no aparelho.',
+        );
+      }
+
+      if (paraEnviar.id != null) {
+        await LocalStorageService.updateFormSyncStatus(
+          paraEnviar.id!,
+          'synced',
+          serverId: serverId,
+          syncedAt: DateTime.now(),
+        );
+      }
+
+      final duplicada = result['duplicated'] == true;
+      return (
+        success: true,
+        message: duplicada
+            ? 'Esta coleta já estava no painel (registro #$serverId).'
+            : 'Coleta enviada e confirmada no painel (registro #$serverId).',
+      );
+    } on PermanentSubmitException catch (e) {
+      return (success: false, message: e.message);
+    } catch (e) {
+      return (
+        success: false,
+        message: e.toString().replaceAll('Exception: ', ''),
+      );
+    }
+  }
+
   Future<int> syncPendingForms() async {
     print('🔄 === SINCRONIZAÇÃO COMPLETA (FORMULÁRIOS + FOTOS) ===');
     print('🔄 Timestamp: ${DateTime.now()}');
@@ -1491,11 +1566,68 @@ class FormProvider with ChangeNotifier {
         // Continua para sincronizar fotos
       }
 
+      // ORDEM IMPORTA: fotos e áudios sobem ANTES dos formulários.
+      //
+      // Antes o formulário era marcado 'synced' na fase 1 e as mídias só
+      // subiam nas fases 2 e 3. Se a mídia falhasse, a coleta já tinha saído
+      // da fila de pendentes: sumia do app com foto/áudio nunca enviados.
+      print('📸 === PRÉ-FASE: ENVIANDO MÍDIAS ANTES DOS FORMULÁRIOS ===');
+      int mediaSyncedCount = 0;
+      bool mediaFailed = false;
+      try {
+        mediaSyncedCount += await PhotoStorageService.syncPendingPhotos();
+        mediaSyncedCount += await syncPendingAudios();
+        if (!PlatformCaps.hasFileSystem) {
+          mediaSyncedCount += await syncWebPendingMedia('photo');
+          mediaSyncedCount += await syncWebPendingMedia('audio');
+        }
+        // Sobrou mídia pendente? Então algum envio falhou.
+        final stats = await PhotoStorageService.getPhotosStats();
+        var pendentes = (stats['pending'] ?? 0) + (stats['error'] ?? 0);
+
+        // Na web os áudios ficam no IndexedDB, fora das estatísticas de
+        // fotos — sem esta checagem a trava deixava passar formulário com
+        // áudio ainda no aparelho.
+        if (!PlatformCaps.hasFileSystem) {
+          pendentes += await WebMediaStore.pendingCount('audio');
+        }
+        if (pendentes > 0) {
+          mediaFailed = true;
+          print('⚠️ $pendentes mídia(s) ainda pendente(s) após o envio');
+        }
+      } catch (e, stackTrace) {
+        mediaFailed = true;
+        print('❌ ERRO ao enviar mídias: $e');
+        print('📋 Stack trace: $stackTrace');
+        _lastSyncError = 'Erro ao enviar fotos/áudios: '
+            '${e.toString().replaceAll('Exception: ', '')}';
+      }
+
+      if (mediaFailed) {
+        // Não envia os formulários: eles seriam confirmados e sairiam da
+        // fila enquanto a mídia correspondente continua no aparelho.
+        print('🛑 Envio de formulários adiado: há mídias pendentes');
+        _lastSyncError ??=
+            'Algumas fotos ou áudios não foram enviados. As respostas '
+            'continuam salvas no aparelho — tente novamente com melhor sinal.';
+        return mediaSyncedCount;
+      }
+
       int formsSyncedCount = 0;
       for (int i = 0; i < pendingForms.length; i++) {
-        final form = pendingForms[i];
+        var form = pendingForms[i];
 
         try {
+          // Coletas salvas por versões anteriores não têm client_id.
+          // Atribui um agora e PERSISTE antes de enviar — se a resposta
+          // se perder, o reenvio usa o mesmo valor e o backend deduplica.
+          if (form.clientId == null && form.id != null) {
+            form = form.copyWith(clientId: const Uuid().v4());
+            await LocalStorageService.updateFormResponse(form);
+            print('🔑 client_id atribuído à coleta ${form.id}: '
+                '${form.clientId}');
+          }
+
           print('📋 === SINCRONIZANDO FORMULÁRIO ${i + 1}/${pendingForms.length} ===');
           print('📋 ID do formulário: ${form.id}');
           print('📋 Questionário ID: ${form.questionnaireId}');
@@ -1514,14 +1646,36 @@ class FormProvider with ChangeNotifier {
           print('📋 Resposta da API: $result');
 
           if (result['success'] == true) {
-            // Atualizar status para sincronizado
-            if (form.id != null) {
+            // Prova de gravação: o id do registro criado no painel. Alguns
+            // backends devolvem em 'data', outros na raiz.
+            final serverId = FormResponse.extractServerId(result);
+
+            if (serverId == null) {
+              // 200 sem identificador: provavelmente gravou, mas não dá para
+              // provar. Mantém pendente — reenviar é melhor que perder.
+              print('⚠️ Servidor confirmou sem devolver id do registro; '
+                  'formulário ${form.id} permanece pendente');
+              _lastSyncError ??=
+                  'O servidor respondeu sem confirmar o registro. As '
+                  'respostas continuam salvas no aparelho.';
+            } else if (form.id != null) {
+              // duplicated:true é SUCESSO — o backend reconheceu o
+              // client_id de um envio anterior e devolveu o id que já
+              // existia. Significa que a coleta ESTÁ no painel.
+              final duplicada = result['duplicated'] == true;
+
               await LocalStorageService.updateFormSyncStatus(
                 form.id!,
                 'synced',
+                serverId: serverId,
+                syncedAt: DateTime.now(),
               );
               formsSyncedCount++;
-              print('✅ Formulário ${form.id} sincronizado com sucesso!');
+              print(duplicada
+                  ? '✅ Formulário ${form.id} JÁ ESTAVA no painel '
+                      '(dedup por client_id, id: $serverId)'
+                  : '✅ Formulário ${form.id} confirmado no painel '
+                      '(id do servidor: $serverId)');
             } else {
               print('⚠️ Formulário sincronizado mas sem ID local');
             }
@@ -1530,6 +1684,15 @@ class FormProvider with ChangeNotifier {
             _lastSyncError = result['message']?.toString() ??
                 'O servidor recusou o formulário sem informar o motivo.';
           }
+        } on PermanentSubmitException catch (e) {
+          // Reenviar o mesmo corpo daria o mesmo erro. Marca a coleta para
+          // não repetir a cada sincronização — ela CONTINUA no aparelho,
+          // nada é descartado, e o aplicador é avisado.
+          print('🛑 Erro permanente no formulário ${form.id}: ${e.message}');
+          if (form.id != null) {
+            await LocalStorageService.updateFormSyncStatus(form.id!, 'error');
+          }
+          _lastSyncError = e.message;
         } catch (e, stackTrace) {
           print('❌ Erro ao sincronizar formulário ${form.id}: $e');
           print('📋 Stack trace: $stackTrace');
@@ -1541,54 +1704,8 @@ class FormProvider with ChangeNotifier {
       print('📋 === RESULTADO FASE 1 ===');
       print('📋 Formulários sincronizados: $formsSyncedCount de ${pendingForms.length}');
 
-      // 2. Sincronizar fotos pendentes SEPARADAMENTE E SEMPRE
-      print('📸 === FASE 2: SINCRONIZANDO FOTOS ===');
-      try {
-        // Verificar estatísticas antes
-        final photosStatsBefore = await PhotoStorageService.getPhotosStats();
-        print('📸 Fotos antes da sync: $photosStatsBefore');
-
-        // Executar sincronização de fotos
-        final photosSyncedCount = await PhotoStorageService.syncPendingPhotos();
-        print('📸 Resultado da sincronização de fotos: $photosSyncedCount');
-
-        // Verificar estatísticas depois
-        final photosStatsAfter = await PhotoStorageService.getPhotosStats();
-        print('📸 Fotos após a sync: $photosStatsAfter');
-
-        totalSynced += photosSyncedCount;
-      } catch (e, stackTrace) {
-        print('❌ ERRO CRÍTICO na sincronização de fotos: $e');
-        print('📋 Stack trace: $stackTrace');
-        _lastSyncError ??= 'Erro ao enviar fotos: '
-            '${e.toString().replaceAll('Exception: ', '')}';
-
-        // Debug adicional em caso de erro
-        try {
-          await PhotoStorageService.debugPrintPhotos();
-        } catch (debugError) {
-          print('❌ Erro no debug de fotos: $debugError');
-        }
-      }
-
-      // 3. Sincronizar áudios pendentes
-      print('🎤 === FASE 3: SINCRONIZANDO ÁUDIOS ===');
-      try {
-        final audiosSyncedCount = await syncPendingAudios();
-        print('🎤 Resultado da sincronização de áudios: $audiosSyncedCount');
-        totalSynced += audiosSyncedCount;
-      } catch (e, stackTrace) {
-        print('❌ ERRO CRÍTICO na sincronização de áudios: $e');
-        print('📋 Stack trace: $stackTrace');
-      }
-
-      // 4. Versão web: mídias pendentes do IndexedDB (fases 2 e 3 acima são
-      // no-op na web; esta é no-op no nativo)
-      if (!PlatformCaps.hasFileSystem) {
-        print('🌐 === FASE 4: SINCRONIZANDO MÍDIAS WEB (IndexedDB) ===');
-        totalSynced += await syncWebPendingMedia('photo');
-        totalSynced += await syncWebPendingMedia('audio');
-      }
+      // As mídias já subiram na pré-fase, antes dos formulários.
+      totalSynced += mediaSyncedCount;
 
       print('📊 === SINCRONIZAÇÃO COMPLETA CONCLUÍDA ===');
       print(

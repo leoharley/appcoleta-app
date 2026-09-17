@@ -18,6 +18,7 @@ import 'questionnaire_preview_screen.dart';
 import 'question_screen.dart';
 import 'profile_screen.dart';
 import 'history_screen.dart';
+import 'sent_forms_screen.dart';
 import 'settings_screen.dart';
 import 'stats_screen.dart';
 import 'stats_graphs_screen.dart';
@@ -32,8 +33,14 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
+class _DashboardScreenState extends State<DashboardScreen>
+    with WidgetsBindingObserver {
   List<FormResponse> _pendingForms = [];
+
+  /// Quantas coletas já foram confirmadas pelo painel. Vem de uma contagem
+  /// sobre o JSON, sem instanciar as coletas — elas só são carregadas ao
+  /// abrir a tela de enviadas.
+  int _syncedCount = 0;
   bool _loadingPendingForms = true;
   bool _isSyncing = false;
   Map<String, int> _photosStats = {
@@ -50,13 +57,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadData();
     _loadAppVersion();
     _watchConnectivity();
   }
 
+  /// O app pode ficar aberto em segundo plano por horas. Ao voltar ao
+  /// primeiro plano, recarrega a lista para refletir o que mudou no painel
+  /// (ex.: questionário desativado) sem depender de fechar e abrir o app.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _hasNetwork) {
+      print('▶️ App em primeiro plano — atualizando questionários do painel');
+      Provider.of<QuestionnaireProvider>(context, listen: false)
+          .loadQuestionnaires();
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _connectivitySub?.cancel();
     super.dispose();
   }
@@ -146,8 +167,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       // Usar o FormProvider para buscar formulários pendentes
       final formProvider = Provider.of<FormProvider>(context, listen: false);
 
-      // Debug do storage antes de carregar
-      await formProvider.debugPrintLocalStorage();
+      // Sem debugPrintLocalStorage() aqui: ele carregava TODAS as coletas
+      // (inclusive as já enviadas) só para imprimir, dobrando o trabalho de
+      // abrir a tela e piorando conforme a lista cresce em campo.
 
       // Buscar formulários pendentes usando o FormProvider
       final pendingForms = await formProvider.getPendingForms();
@@ -173,8 +195,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
       }
 
+      // Contagem leve: não carrega as coletas enviadas, só conta.
+      final counts = await formProvider.getFormCounts();
+
       setState(() {
         _pendingForms = pendingForms;
+        _syncedCount = counts['synced'] ?? 0;
         _loadingPendingForms = false;
       });
     } catch (e, stackTrace) {
@@ -184,18 +210,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       // Fallback: tentar carregar diretamente do LocalStorageService
       try {
         print('🔄 Tentando fallback direto do LocalStorageService...');
-        final allForms = await LocalStorageService.getFormResponses();
-
-        final pendingForms = allForms.where((form) {
-          final isPending =
-              form.syncStatus == 'pending' ||
-              form.syncStatus == 'offline' ||
-              form.syncStatus == 'error';
-          print(
-            '📋 Form ID: ${form.id}, Status: ${form.syncStatus}, Pending: $isPending',
-          );
-          return isPending;
-        }).toList();
+        // Só os estados que ainda precisam subir. Coletas já confirmadas
+        // pelo painel não entram aqui — elas ficam na tela "Enviadas".
+        final pendingForms = [
+          ...await LocalStorageService.getFormResponsesByStatus('pending'),
+          ...await LocalStorageService.getFormResponsesByStatus('offline'),
+          ...await LocalStorageService.getFormResponsesByStatus('error'),
+        ];
 
         print(
           '✅ Fallback: Encontrados ${pendingForms.length} formulários pendentes',
@@ -255,6 +276,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   _buildWelcomeCard(user),
                                   const SizedBox(height: 20),
                                   _buildPendingFormsCard(),
+                                  if (_syncedCount > 0) ...[
+                                    const SizedBox(height: 20),
+                                    _buildSentFormsCard(),
+                                  ],
                                   const SizedBox(height: 20),
                                   _buildManagementOptions(context),
                                   const SizedBox(height: 20),
@@ -279,6 +304,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   const SizedBox(height: 20),
                                   // Card de Formulários Pendentes
                                   _buildPendingFormsCard(),
+                                  // Coletas já confirmadas pelo painel.
+                                  // Card próprio: continua acessível mesmo
+                                  // com a fila de pendentes zerada.
+                                  if (_syncedCount > 0) ...[
+                                    const SizedBox(height: 20),
+                                    _buildSentFormsCard(),
+                                  ],
                                   const SizedBox(height: 20),
                                   Consumer<QuestionnaireProvider>(
                                     builder: (context, provider, child) {
@@ -312,6 +344,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   ),
                                   const SizedBox(height: 15),
                                 ],
+                                // Avisa quando a lista veio do cache: nesse
+                                // estado ela pode conter questionários já
+                                // desativados no painel.
+                                Consumer<QuestionnaireProvider>(
+                                  builder: (context, provider, child) {
+                                    if (!provider.isFromCache) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    return Container(
+                                      width: double.infinity,
+                                      margin: const EdgeInsets.only(bottom: 12),
+                                      padding: const EdgeInsets.all(10),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFFFF3E0),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: const Row(
+                                        children: [
+                                          Icon(Icons.cloud_off,
+                                              size: 16,
+                                              color: Color(0xFFE8962E)),
+                                          SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              'Lista salva no aparelho. Conecte-se '
+                                              'para ver os questionários atuais.',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: Color(0xFFBF6D16),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
                                 Consumer<QuestionnaireProvider>(
                                   builder: (context, provider, child) {
                                     if (provider.isLoading) {
@@ -513,6 +582,89 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         );
       },
+    );
+  }
+
+  /// Acesso às coletas já confirmadas pelo painel.
+  ///
+  /// Card próprio, FORA do card de pendentes: aquele esconde o conteúdo
+  /// quando a fila zera, e o link ia junto — justamente quando o aplicador
+  /// mais quer conferir o que foi enviado.
+  ///
+  /// As coletas não são carregadas aqui: só o contador, lido sem instanciar
+  /// os objetos. A lista é montada ao abrir a tela.
+  Widget _buildSentFormsCard() {
+    if (_syncedCount == 0) return const SizedBox.shrink();
+
+    return GestureDetector(
+      onTap: _navigateToSentForms,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF198754).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.verified,
+                    color: Color(0xFF198754), size: 20),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Coletas Enviadas',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF23345F),
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'Confirmadas pelo painel',
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF198754).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '$_syncedCount',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF198754),
+                  ),
+                ),
+              ),
+              const Icon(Icons.chevron_right, color: Colors.grey, size: 20),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -1800,6 +1952,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
       context,
       MaterialPageRoute(builder: (context) => const HistoryScreen()),
     );
+  }
+
+  _navigateToSentForms() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const SentFormsScreen()),
+    );
+    // Ao voltar, atualiza os contadores (o usuário pode ter sincronizado).
+    if (mounted) await _loadPendingForms();
   }
 
   _navigateToSettings() {

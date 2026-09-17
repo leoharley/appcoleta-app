@@ -111,10 +111,27 @@ class FormEditProvider with ChangeNotifier {
       final response = await ApiService.submitForm(form);
 
       if (response['success'] == true) {
-        print('✅ Formulário sincronizado com sucesso');
+        // Só considera enviado com a prova de gravação (id do registro).
+        // Um 200 sem id mantém a coleta pendente: reenviar é melhor que
+        // dar como enviada uma resposta que pode não ter chegado.
+        final serverId = FormResponse.extractServerId(response);
 
-        // Atualizar status para 'synced'
-        final syncedForm = form.copyWith(syncStatus: 'synced');
+        if (serverId == null) {
+          _error = 'O servidor respondeu sem confirmar o registro. '
+              'A resposta continua salva no aparelho.';
+          print('⚠️ 200 sem id do registro — mantendo pendente');
+          _isSaving = false;
+          notifyListeners();
+          return false;
+        }
+
+        print('✅ Formulário confirmado no painel (id: $serverId)');
+
+        final syncedForm = form.copyWith(
+          syncStatus: 'synced',
+          serverId: serverId,
+          syncedAt: DateTime.now(),
+        );
         await LocalStorageService.updateFormResponse(syncedForm);
 
         _currentForm = syncedForm;

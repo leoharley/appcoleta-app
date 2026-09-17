@@ -4,6 +4,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
 import '../services/platform_caps.dart';
+import '../services/web_media_store/web_media_store.dart';
 
 class PhotoStorageService {
   static const String _photosMetadataKey = 'offline_photos_metadata';
@@ -323,6 +324,22 @@ class PhotoStorageService {
   /// Obtém estatísticas das fotos offline
   static Future<Map<String, int>> getPhotosStats() async {
     try {
+      // WEB: as fotos vivem no IndexedDB (WebMediaStore), não nesta chave de
+      // metadados — que só é escrita no fluxo nativo. Sem este ramo a tela
+      // mostrava "0 fotos" com foto capturada, e a trava que impede enviar
+      // formulário com mídia pendente nunca disparava na web.
+      if (!PlatformCaps.hasFileSystem) {
+        final pendentes = await WebMediaStore.pendingCount('photo');
+        return {
+          'total': pendentes,
+          'pending': pendentes,
+          'synced': 0,
+          'error': 0,
+          'photo1_pending': pendentes,
+          'photo2_pending': 0,
+        };
+      }
+
       final prefs = await SharedPreferences.getInstance();
       final String? data = prefs.getString(_photosMetadataKey);
 

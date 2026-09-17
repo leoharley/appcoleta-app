@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/questionnaire.dart';
@@ -356,7 +357,101 @@ class LocalStorageService {
     }
   }
 
-  static Future<void> updateFormSyncStatus(int formId, String status) async {
+  /// Carrega SOMENTE os formulários com o status pedido.
+  ///
+  /// A tela principal só precisa dos pendentes. Carregar tudo e filtrar
+  /// depois obrigava a instanciar cada coleta já enviada — com todas as
+  /// respostas — a cada abertura, e a lista só cresce em campo.
+  /// Aqui o filtro é feito sobre o JSON cru, antes do parsing.
+  static Future<List<FormResponse>> getFormResponsesByStatus(
+    String status,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonString = prefs.getString(_formsKey);
+      if (jsonString == null || jsonString.isEmpty) return [];
+
+      final jsonList = jsonDecode(jsonString) as List<dynamic>;
+      final forms = <FormResponse>[];
+
+      for (final item in jsonList) {
+        if (item is! Map<String, dynamic>) continue;
+        // Filtra ANTES de construir o objeto.
+        if ((item['sync_status'] as String? ?? 'pending') != status) continue;
+        try {
+          forms.add(FormResponse.fromJson(item));
+        } catch (e) {
+          print('❌ Erro ao carregar formulário ${item['id']}: $e');
+        }
+      }
+
+      print('📋 ${forms.length} formulário(s) com status "$status"');
+      return forms;
+    } catch (e) {
+      print('❌ Erro ao carregar formulários por status: $e');
+      return [];
+    }
+  }
+
+  /// Conta os formulários por status sem instanciar nenhum objeto.
+  ///
+  /// É o que a tela principal usa para o resumo — percorre o JSON e conta,
+  /// sem montar as respostas de cada coleta.
+  static Future<Map<String, int>> getFormCountsByStatus() async {
+    final counts = <String, int>{'pending': 0, 'synced': 0, 'error': 0};
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonString = prefs.getString(_formsKey);
+      if (jsonString == null || jsonString.isEmpty) return counts;
+
+      final jsonList = jsonDecode(jsonString) as List<dynamic>;
+      for (final item in jsonList) {
+        if (item is! Map) continue;
+        final status = item['sync_status'] as String? ?? 'pending';
+        counts[status] = (counts[status] ?? 0) + 1;
+      }
+      return counts;
+    } catch (e) {
+      print('❌ Erro ao contar formulários: $e');
+      return counts;
+    }
+  }
+
+  /// Serializa as escritas na chave de formulários.
+  ///
+  /// Todas elas fazem read-modify-write do array inteiro (SharedPreferences
+  /// não tem update parcial). Sem esta fila, salvar uma coleta nova enquanto
+  /// a sincronização atualiza status regravava a lista lida ANTES da nova
+  /// coleta existir — e a resposta sumia do app sem nunca ter sido enviada.
+  static Future<void> _formsLock = Future<void>.value();
+
+  static Future<T> _withFormsLock<T>(Future<T> Function() action) {
+    final completer = Completer<T>();
+    _formsLock = _formsLock.then((_) async {
+      try {
+        completer.complete(await action());
+      } catch (e, s) {
+        completer.completeError(e, s);
+      }
+    });
+    return completer.future;
+  }
+
+  static Future<void> updateFormSyncStatus(
+    int formId,
+    String status, {
+    int? serverId,
+    DateTime? syncedAt,
+  }) =>
+      _withFormsLock(
+          () => _updateFormSyncStatus(formId, status, serverId, syncedAt));
+
+  static Future<void> _updateFormSyncStatus(
+    int formId,
+    String status,
+    int? serverId,
+    DateTime? syncedAt,
+  ) async {
     try {
       print('🔄 === ATUALIZANDO STATUS DE SINCRONIZAÇÃO ===');
       print('📋 Form ID: $formId');
@@ -369,7 +464,13 @@ class LocalStorageService {
       for (int i = 0; i < forms.length; i++) {
         if (forms[i].id == formId) {
           print('✅ Formulário encontrado na posição $i');
-          forms[i] = forms[i].copyWith(syncStatus: status);
+          forms[i] = forms[i].copyWith(
+            syncStatus: status,
+            // Prova de gravação no painel: id do registro criado no
+            // servidor e quando a confirmação chegou.
+            serverId: serverId,
+            syncedAt: syncedAt,
+          );
           formFound = true;
           break;
         }
