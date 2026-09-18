@@ -27,6 +27,11 @@ class _SentFormsScreenState extends State<SentFormsScreen> {
   final List<FormResponse> _visible = [];
 
   List<FormResponse> _all = const [];
+
+  /// Cópias locais repetidas que não são exibidas, para a contagem da tela
+  /// bater com a do painel.
+  int _duplicatasOcultas = 0;
+
   bool _loading = true;
 
   @override
@@ -53,14 +58,48 @@ class _SentFormsScreenState extends State<SentFormsScreen> {
       return db.compareTo(da);
     });
 
+    final unicas = _deduplicar(forms);
+    final duplicadas = forms.length - unicas.length;
+
     if (!mounted) return;
     setState(() {
-      _all = forms;
+      _all = unicas;
+      _duplicatasOcultas = duplicadas;
       _visible
         ..clear()
-        ..addAll(forms.take(_pageSize));
+        ..addAll(unicas.take(_pageSize));
       _loading = false;
     });
+  }
+
+  /// Mantém UMA linha por registro do painel.
+  ///
+  /// O aparelho podia guardar mais de uma cópia local da mesma coleta —
+  /// reenvios feitos antes da correção de idempotência. Todas apontam para
+  /// o mesmo registro (mesmo serverId), então a contagem da tela não batia
+  /// com a do painel.
+  ///
+  /// Critério: agrupa por serverId; na falta dele (coletas antigas marcadas
+  /// como enviadas sem confirmação), agrupa por client_id; e sem os dois,
+  /// mantém a coleta como está — sem prova de identidade, não dá para
+  /// afirmar que é repetida.
+  List<FormResponse> _deduplicar(List<FormResponse> forms) {
+    final vistos = <String>{};
+    final resultado = <FormResponse>[];
+
+    for (final form in forms) {
+      final chave = form.serverId != null
+          ? 'srv:${form.serverId}'
+          : (form.clientId != null ? 'cli:${form.clientId}' : null);
+
+      if (chave == null) {
+        resultado.add(form);
+        continue;
+      }
+      if (vistos.add(chave)) resultado.add(form);
+    }
+
+    return resultado;
   }
 
   void _onScroll() {
@@ -157,10 +196,26 @@ class _SentFormsScreenState extends State<SentFormsScreen> {
           const Icon(Icons.verified, size: 18, color: Color(0xFF198754)),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              '${_all.length} coleta(s) enviada(s). Toque para ver as '
-              'respostas e reenviar se precisar.',
-              style: const TextStyle(fontSize: 12, color: Color(0xFF1B5E20)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${_all.length} coleta(s) enviada(s). Toque para ver as '
+                  'respostas e reenviar se precisar.',
+                  style:
+                      const TextStyle(fontSize: 12, color: Color(0xFF1B5E20)),
+                ),
+                if (_duplicatasOcultas > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      '$_duplicatasOcultas cópia(s) repetida(s) da mesma '
+                      'coleta não estão sendo mostradas.',
+                      style: const TextStyle(
+                          fontSize: 11, color: Color(0xFF4C7A52)),
+                    ),
+                  ),
+              ],
             ),
           ),
         ],

@@ -405,11 +405,31 @@ class LocalStorageService {
       if (jsonString == null || jsonString.isEmpty) return counts;
 
       final jsonList = jsonDecode(jsonString) as List<dynamic>;
+
+      // As enviadas são contadas SEM repetição, pelo registro do painel
+      // (server_id) ou pela chave de idempotência (client_id). O aparelho
+      // pode ter mais de uma cópia local da mesma coleta, e o número
+      // mostrado precisa bater com o que existe no painel.
+      final enviadasUnicas = <String>{};
+
       for (final item in jsonList) {
         if (item is! Map) continue;
         final status = item['sync_status'] as String? ?? 'pending';
+
+        if (status == 'synced') {
+          final serverId = item['server_id'];
+          final clientId = item['client_id'];
+          final chave = serverId != null
+              ? 'srv:$serverId'
+              : (clientId != null ? 'cli:$clientId' : 'loc:${item['id']}');
+          enviadasUnicas.add(chave);
+          continue;
+        }
+
         counts[status] = (counts[status] ?? 0) + 1;
       }
+
+      counts['synced'] = enviadasUnicas.length;
       return counts;
     } catch (e) {
       print('❌ Erro ao contar formulários: $e');
