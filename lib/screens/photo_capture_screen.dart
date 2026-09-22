@@ -9,6 +9,7 @@ import '../models/questionnaire.dart';
 import '../providers/form_provider.dart';
 import '../services/platform_caps.dart';
 import '../services/location_service.dart';
+import '../services/image_downscaler/image_downscaler.dart';
 import '../services/web_media_store/web_media_store.dart';
 import '../widgets/location_required_dialog.dart';
 import 'form_completed_screen.dart';
@@ -39,6 +40,20 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
   bool _isNavigating = false;
   final ImagePicker _picker = ImagePicker();
 
+  /// Limites da foto de evidência.
+  ///
+  /// Sem eles a imagem vinha na resolução nativa da câmera (12 MP ≈
+  /// 4000x3000). O JPEG até cabe na memória, mas para EXIBIR o preview o
+  /// navegador descomprime para bitmap: 4000x3000x4 bytes ≈ 48 MB de uma
+  /// vez. Em aparelho de 2 GB rodando no navegador isso derruba a aba.
+  ///
+  /// 1600x1200 (≈2 MP) descomprime para ~7,7 MB e continua legível de
+  /// sobra para evidência de campo. O redimensionamento é feito pelo
+  /// próprio image_picker, ANTES de os bytes chegarem ao app.
+  static const double _maxPhotoWidth = 1600;
+  static const double _maxPhotoHeight = 1600;
+  static const int _photoQuality = 70;
+
   @override
   void initState() {
     super.initState();
@@ -50,6 +65,20 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
     if (widget.questionnaire.requiresLocation) {
       _getCurrentLocation();
     }
+  }
+
+  @override
+  void dispose() {
+    // Libera os bytes das fotos ao sair da tela. Eles já estão salvos no
+    // IndexedDB/arquivo; manter uma segunda cópia viva só pressiona a
+    // memória de aparelhos fracos durante o resto do questionário.
+    _capturedPhotoBytes = null;
+    _capturedPhoto2Bytes = null;
+    // O cache de imagens do Flutter guarda os bitmaps decodificados;
+    // sem limpar, eles sobrevivem à tela.
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
+    super.dispose();
   }
 
   @override
@@ -299,9 +328,11 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(8),
               image: DecorationImage(
-                image: _capturedPhotoBytes != null
-                    ? MemoryImage(_capturedPhotoBytes!) as ImageProvider
-                    : FileImage(_capturedPhoto!),
+                // O preview tem 120px de altura, mas sem ResizeImage o
+                // bitmap é decodificado em resolução plena. Decodificar já
+                // reduzido é o que mantém o uso de memória baixo em
+                // aparelhos fracos.
+                image: _thumb(_capturedPhotoBytes, _capturedPhoto),
                 fit: BoxFit.cover,
               ),
             ),
@@ -366,9 +397,7 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(8),
               image: DecorationImage(
-                image: _capturedPhoto2Bytes != null
-                    ? MemoryImage(_capturedPhoto2Bytes!) as ImageProvider
-                    : FileImage(_capturedPhoto2!),
+                image: _thumb(_capturedPhoto2Bytes, _capturedPhoto2),
                 fit: BoxFit.cover,
               ),
             ),
@@ -559,6 +588,17 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
 
   // Substitua o método _capturePhoto na photo_capture_screen.dart:
 
+  /// Provider de imagem para os previews, decodificando em tamanho reduzido.
+  ///
+  /// Sem o ResizeImage o Flutter decodifica a imagem inteira para o cache,
+  /// mesmo o preview tendo 120px. Em aparelho fraco é o que estoura a
+  /// memória logo após a captura.
+  ImageProvider _thumb(Uint8List? bytes, File? file) {
+    final ImageProvider base =
+        bytes != null ? MemoryImage(bytes) : FileImage(file!);
+    return ResizeImage(base, width: 640, allowUpscaling: false);
+  }
+
   Future<void> _capturePhoto() async {
     print('📸 Tentando capturar foto');
 
@@ -570,18 +610,31 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
       print('📸 Permissão de câmera: $permission');
 
       if (permission.isGranted) {
+        // No NATIVO o plugin redimensiona de forma eficiente, então os
+        // limites vão aqui. Na WEB eles são contraproducentes: o
+        // image_picker_for_web carrega a imagem inteira num
+        // HTMLImageElement (12 MP ≈ 48 MB) só para então reduzir — é o
+        // pico que derruba celular fraco. Lá a redução é feita pelo
+        // ImageDownscaler, com createImageBitmap.
         final XFile? photo = await _picker.pickImage(
           source: ImageSource.camera,
-          imageQuality: 80,
+          maxWidth: PlatformCaps.isWeb ? null : _maxPhotoWidth,
+          maxHeight: PlatformCaps.isWeb ? null : _maxPhotoHeight,
+          imageQuality: PlatformCaps.isWeb ? null : _photoQuality,
         );
 
         if (photo != null) {
           print('📸 Foto capturada: ${photo.path}');
 
           if (PlatformCaps.isWeb) {
-            // Web: guardar bytes no IndexedDB e passar só o filename ao
-            // formulário (o submit trata nomes sem '/' como já processados).
-            final bytes = await photo.readAsBytes();
+            // Web: reduzir ANTES de guardar. O createImageBitmap decodifica
+            // já no tamanho final, sem materializar o bitmap de 12 MP.
+            final brutos = await photo.readAsBytes();
+            final bytes = await ImageDownscaler.downscale(
+              brutos,
+              maxDimension: _maxPhotoWidth.toInt(),
+              quality: _photoQuality / 100,
+            );
             final filename =
                 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
             // Foto anterior refeita? Remover a pendência órfã.
@@ -671,16 +724,29 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
       print('📸 Permissão de câmera: $permission');
 
       if (permission.isGranted) {
+        // No NATIVO o plugin redimensiona de forma eficiente, então os
+        // limites vão aqui. Na WEB eles são contraproducentes: o
+        // image_picker_for_web carrega a imagem inteira num
+        // HTMLImageElement (12 MP ≈ 48 MB) só para então reduzir — é o
+        // pico que derruba celular fraco. Lá a redução é feita pelo
+        // ImageDownscaler, com createImageBitmap.
         final XFile? photo = await _picker.pickImage(
           source: ImageSource.camera,
-          imageQuality: 80,
+          maxWidth: PlatformCaps.isWeb ? null : _maxPhotoWidth,
+          maxHeight: PlatformCaps.isWeb ? null : _maxPhotoHeight,
+          imageQuality: PlatformCaps.isWeb ? null : _photoQuality,
         );
 
         if (photo != null) {
           print('📸 Segunda foto capturada: ${photo.path}');
 
           if (PlatformCaps.isWeb) {
-            final bytes = await photo.readAsBytes();
+            final brutos = await photo.readAsBytes();
+            final bytes = await ImageDownscaler.downscale(
+              brutos,
+              maxDimension: _maxPhotoWidth.toInt(),
+              quality: _photoQuality / 100,
+            );
             final filename =
                 'photo2_${DateTime.now().millisecondsSinceEpoch}.jpg';
             if (_photo2Filename != null) {

@@ -16,10 +16,17 @@ import 'providers/stratification_provider.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
+  // Teto do cache de imagens. O padrão do Flutter (1000 imagens / 100 MB)
+  // é pensado para aparelho com folga de memória; em celular de 2 GB
+  // rodando no navegador, guardar 100 MB de bitmaps decodificados é o que
+  // derruba a aba depois da foto de evidência.
+  PaintingBinding.instance.imageCache.maximumSize = 50;
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 20 << 20; // 20 MB
+
   // Inicializar configurações conforme a plataforma
   _initializePlatform();
-  
+
   runApp(const AppColetaApp());
 }
 

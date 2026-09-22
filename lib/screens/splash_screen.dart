@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter/foundation.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../providers/auth_provider.dart';
 import '../services/pwa_install/pwa_install.dart';
 import 'login_screen.dart';
@@ -14,10 +15,25 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> {
+  /// Lida do pubspec via PackageInfo, não escrita à mão: a versão fixa no
+  /// código ficava para trás a cada release e confundia o suporte em campo.
+  String _appVersion = '';
+
   @override
   void initState() {
     super.initState();
+    _loadAppVersion();
     _initializeApp();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) setState(() => _appVersion = info.version);
+    } catch (e) {
+      // Sem a versão a splash continua funcionando — só não a exibe.
+      if (kDebugMode) print('⚠️ Não foi possível obter a versão: $e');
+    }
   }
 
   Future<void> _initializeApp() async {
@@ -156,9 +172,9 @@ class _SplashScreenState extends State<SplashScreen> {
               const SizedBox(height: 80),
               
               // Versão (posicionada mais baixo)
-              const Text(
-                'Versão: 2.7.0',
-                style: TextStyle(
+              Text(
+                _appVersion.isEmpty ? '' : 'Versão: $_appVersion',
+                style: const TextStyle(
                   fontSize: 12,
                   color: Colors.grey,
                 ),

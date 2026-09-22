@@ -13,6 +13,7 @@ class WebMediaStore {
 
   static const _dbName = 'appcoleta_media';
   static const _storeName = 'media';
+  static const _kindIndex = 'kind_idx';
   static Database? _db;
   static bool _persistenceRequested = false;
 
@@ -33,11 +34,18 @@ class WebMediaStore {
     final factory = idbFactoryBrowser;
     _db = await factory.open(
       _dbName,
-      version: 1,
+      // v2: índice por 'kind'. Sem ele, listar as pendências obrigava a ler
+      // todos os registros — com os bytes das fotos junto — só para
+      // descobrir os nomes.
+      version: 2,
       onUpgradeNeeded: (VersionChangeEvent e) {
         final db = e.database;
-        if (!db.objectStoreNames.contains(_storeName)) {
-          db.createObjectStore(_storeName, keyPath: 'id');
+        final store = db.objectStoreNames.contains(_storeName)
+            ? e.transaction.objectStore(_storeName)
+            : db.createObjectStore(_storeName, keyPath: 'id');
+
+        if (!store.indexNames.contains(_kindIndex)) {
+          store.createIndex(_kindIndex, 'kind');
         }
       },
     );
@@ -62,17 +70,31 @@ class WebMediaStore {
     print('💾 WebMediaStore: $kind salvo ($filename, ${bytes.length} bytes)');
   }
 
+  /// Lista os nomes das mídias pendentes SEM carregar os bytes.
+  ///
+  /// Antes usava getAll(), que trazia cada registro inteiro — todas as
+  /// fotos completas na memória só para ler os nomes. Com 3-4 fotos isso
+  /// eram dezenas de MB por chamada, e a contagem roda sempre que o painel
+  /// principal abre, volta do segundo plano ou reconecta. Era o que
+  /// derrubava aparelhos de 4 GB.
+  ///
+  /// openKeyCursor sobre o índice 'kind' devolve apenas as CHAVES; os bytes
+  /// nunca saem do IndexedDB.
   static Future<List<String>> listPendingFilenames(String kind) async {
     final db = await _open();
     final txn = db.transaction(_storeName, idbModeReadOnly);
-    final all = await txn.objectStore(_storeName).getAll();
+    final index = txn.objectStore(_storeName).index(_kindIndex);
+
+    final nomes = <String>[];
+    await for (final cursor in index.openKeyCursor(
+      key: kind,
+      autoAdvance: true,
+    )) {
+      nomes.add(cursor.primaryKey as String);
+    }
     await txn.completed;
 
-    return all
-        .whereType<Map>()
-        .where((m) => m['kind'] == kind)
-        .map((m) => m['id'] as String)
-        .toList();
+    return nomes;
   }
 
   static Future<Uint8List?> readBytes(String filename) async {
@@ -96,8 +118,15 @@ class WebMediaStore {
     await txn.completed;
   }
 
+  /// Conta as pendências sem ler nenhum registro — nem chaves, nem bytes.
+  /// É o caminho usado pelo painel principal a cada carga.
   static Future<int> pendingCount(String kind) async {
-    return (await listPendingFilenames(kind)).length;
+    final db = await _open();
+    final txn = db.transaction(_storeName, idbModeReadOnly);
+    final total =
+        await txn.objectStore(_storeName).index(_kindIndex).count(kind);
+    await txn.completed;
+    return total;
   }
 
   /// Salva o conteúdo de um blob URL (retornado pelo MediaRecorder via

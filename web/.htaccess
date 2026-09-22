@@ -35,10 +35,14 @@ RewriteRule . index.html [L]
   #
   # Vem depois do bloco acima porque, em regras concorrentes, a última vence.
   # -------------------------------------------------------------------------
+  # "no-cache" (e não "no-store"): o navegador revalida a cada acesso, que é
+  # o objetivo, mas AINDA PODE guardar o arquivo. Com "no-store" alguns
+  # navegadores se recusam a manter o index.html, e sem ele não há como
+  # abrir o app sem internet.
   <FilesMatch "^(index\.html|flutter_bootstrap\.js|flutter_service_worker\.js|flutter\.js|version\.json|manifest\.json)$">
-    Header set Cache-Control "no-cache, no-store, must-revalidate"
-    Header set Pragma "no-cache"
-    Header set Expires "0"
+    Header set Cache-Control "no-cache, must-revalidate"
+    Header unset Pragma
+    Header unset Expires
   </FilesMatch>
 </IfModule>
 
